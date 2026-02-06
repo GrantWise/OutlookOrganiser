@@ -487,14 +487,14 @@ Configure `Anthropic(max_retries=3)` — the SDK retries 429, 5xx, timeouts, and
 ## Phase 6: Bootstrap & Dry-Run (Est: 1 day)
 
 ### Deliverables
-- [ ] 6.1 Implement bootstrap Pass 1 (batch analysis with progress bar)
-- [ ] 6.2 Implement bootstrap Pass 2 (consolidation)
-- [ ] 6.3 Write `config.yaml.proposed` output
-- [ ] 6.4 Populate `sender_profiles` during bootstrap
-- [ ] 6.5 Implement bootstrap idempotency checks
-- [ ] 6.6 Implement dry-run classifier with distribution report
-- [ ] 6.7 Implement confusion matrix (when corrections exist)
-- [ ] 6.8 Add CLI commands: `bootstrap`, `dry-run`
+- [x] 6.1 Implement bootstrap Pass 1 (batch analysis with progress bar)
+- [x] 6.2 Implement bootstrap Pass 2 (consolidation)
+- [x] 6.3 Write `config.yaml.proposed` output
+- [x] 6.4 Populate `sender_profiles` during bootstrap (batch upsert for N+1 elimination)
+- [x] 6.5 Implement bootstrap idempotency checks
+- [x] 6.6 Implement dry-run classifier with distribution report
+- [x] 6.7 Implement confusion matrix (when corrections exist)
+- [x] 6.8 Add CLI commands: `bootstrap`, `dry-run`
 
 ### Files to Create
 ```
@@ -536,16 +536,16 @@ python -m assistant dry-run --days 90 --sample 20 [--limit N]
 ```
 
 ### Verification Checklist
-- [ ] Bootstrap shows progress bar during email fetch
-- [ ] Bootstrap batches emails to Claude correctly
-- [ ] Bootstrap consolidation merges duplicates
-- [ ] `config.yaml.proposed` written with valid YAML
-- [ ] `sender_profiles` table populated
-- [ ] Idempotency prompt shown for existing proposed config
-- [ ] `--force` flag skips prompts
-- [ ] Dry-run shows folder distribution report
-- [ ] Dry-run shows sample classifications
-- [ ] Confusion matrix shown when corrections exist
+- [x] Bootstrap shows progress bar during email fetch
+- [x] Bootstrap batches emails to Claude correctly
+- [x] Bootstrap consolidation merges duplicates
+- [x] `config.yaml.proposed` written with valid YAML
+- [x] `sender_profiles` table populated (batch upsert)
+- [x] Idempotency prompt shown for existing proposed config
+- [x] `--force` flag skips prompts
+- [x] Dry-run shows folder distribution report
+- [x] Dry-run shows sample classifications
+- [x] Confusion matrix shown when corrections exist
 
 ### Reference Files
 - `Reference/spec/03-agent-behaviors.md` Section 1 - Bootstrap two-pass design

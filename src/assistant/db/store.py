@@ -1236,6 +1236,87 @@ class DatabaseStore:
             logger.error("Failed to upsert sender profile", email=email, error=str(e))
             raise DatabaseError(f"Failed to upsert sender profile: {e}") from e
 
+    async def upsert_sender_profiles_batch(
+        self,
+        profiles: list[dict[str, str | int | bool | None]],
+    ) -> int:
+        """Upsert multiple sender profiles in a single transaction.
+
+        Optimized for bootstrap when populating 500+ sender profiles.
+        Combines upsert, auto_rule_candidate marking, and default_folder
+        update into a single statement per profile, all in one transaction.
+
+        Expected dict keys:
+            email (str): Sender email address (required)
+            display_name (str | None): Sender display name
+            category (str): SenderCategory value (default: "unknown")
+            email_count (int): Total email count to set (not increment)
+            auto_rule_candidate (bool): Whether sender is a candidate
+            default_folder (str | None): Most common folder for sender
+
+        Args:
+            profiles: List of profile dicts
+
+        Returns:
+            Number of profiles upserted
+        """
+        if not profiles:
+            return 0
+
+        try:
+            async with self._db() as db:
+                now = datetime.now().isoformat()
+
+                for profile in profiles:
+                    addr = str(profile["email"]).lower()
+                    domain = addr.split("@")[1].lower() if "@" in addr else None
+                    display_name = profile.get("display_name")
+                    category = profile.get("category", "unknown")
+                    email_count = profile.get("email_count", 1)
+                    is_candidate = profile.get("auto_rule_candidate", False)
+                    default_folder = profile.get("default_folder")
+
+                    await db.execute(
+                        """
+                        INSERT INTO sender_profiles (
+                            email, display_name, domain, category, email_count,
+                            auto_rule_candidate, default_folder, last_seen, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(email) DO UPDATE SET
+                            display_name = COALESCE(excluded.display_name, display_name),
+                            category = CASE WHEN excluded.category != 'unknown'
+                                           THEN excluded.category ELSE category END,
+                            email_count = excluded.email_count,
+                            auto_rule_candidate = excluded.auto_rule_candidate,
+                            default_folder = COALESCE(excluded.default_folder, default_folder),
+                            last_seen = excluded.last_seen,
+                            updated_at = excluded.updated_at
+                        """,
+                        (
+                            addr,
+                            display_name,
+                            domain,
+                            category,
+                            email_count,
+                            1 if is_candidate else 0,
+                            default_folder,
+                            now,
+                            now,
+                        ),
+                    )
+
+                await db.commit()
+                logger.debug("Batch upserted sender profiles", count=len(profiles))
+                return len(profiles)
+
+        except aiosqlite.Error as e:
+            logger.error(
+                "Failed to batch upsert sender profiles",
+                count=len(profiles),
+                error=str(e),
+            )
+            raise DatabaseError(f"Failed to batch upsert sender profiles: {e}") from e
+
     async def get_sender_profile(self, email: str) -> SenderProfile | None:
         """Get a sender profile by email.
 
@@ -1829,3 +1910,68 @@ class DatabaseStore:
         except aiosqlite.Error as e:
             logger.error("Failed to analyze database", error=str(e))
             raise DatabaseError(f"Failed to analyze database: {e}") from e
+
+    # =========================================================================
+    # Dry-Run Support Operations
+    # =========================================================================
+
+    async def get_emails_by_date_range(
+        self,
+        days: int,
+        limit: int = 10000,
+    ) -> list[Email]:
+        """Get emails from the last N days.
+
+        Used by dry-run to load previously bootstrapped emails.
+
+        Args:
+            days: Number of days to look back
+            limit: Maximum number of emails to return
+
+        Returns:
+            List of Email dataclasses ordered by received_at desc
+        """
+        try:
+            cutoff = datetime.now() - timedelta(days=days)
+
+            async with self._db() as db:
+                cursor = await db.execute(
+                    """
+                    SELECT * FROM emails
+                    WHERE received_at >= ?
+                    ORDER BY received_at DESC
+                    LIMIT ?
+                    """,
+                    (cutoff.isoformat(), limit),
+                )
+                rows = await cursor.fetchall()
+                return [self._row_to_email(row) for row in rows]
+
+        except aiosqlite.Error as e:
+            logger.error("Failed to get emails by date range", days=days, error=str(e))
+            raise DatabaseError(f"Failed to get emails by date range: {e}") from e
+
+    async def get_resolved_suggestions(self) -> list[Suggestion]:
+        """Get all resolved suggestions (approved or partial).
+
+        Used by dry-run confusion matrix to compare suggested vs approved values.
+
+        Returns:
+            List of Suggestion dataclasses with resolved_at set
+        """
+        try:
+            async with self._db() as db:
+                cursor = await db.execute(
+                    """
+                    SELECT * FROM suggestions
+                    WHERE status IN ('approved', 'partial')
+                    AND resolved_at IS NOT NULL
+                    ORDER BY resolved_at DESC
+                    """
+                )
+                rows = await cursor.fetchall()
+                return [self._row_to_suggestion(row) for row in rows]
+
+        except aiosqlite.Error as e:
+            logger.error("Failed to get resolved suggestions", error=str(e))
+            raise DatabaseError(f"Failed to get resolved suggestions: {e}") from e

@@ -751,6 +751,130 @@ class TestBatchOperations:
         assert histories["unknown@example.com"].folder_distribution == {}
 
 
+class TestUpsertSenderProfilesBatch:
+    """Tests for batch sender profile upsert."""
+
+    @pytest.mark.asyncio
+    async def test_upserts_multiple_profiles(self, store: DatabaseStore) -> None:
+        """Test batch upserting multiple sender profiles."""
+        profiles = [
+            {
+                "email": "alice@example.com",
+                "display_name": "Alice",
+                "category": "client",
+                "email_count": 15,
+                "auto_rule_candidate": False,
+                "default_folder": None,
+            },
+            {
+                "email": "bob@example.com",
+                "display_name": "Bob",
+                "category": "newsletter",
+                "email_count": 42,
+                "auto_rule_candidate": True,
+                "default_folder": "Reference/Newsletters",
+            },
+        ]
+
+        count = await store.upsert_sender_profiles_batch(profiles)
+        assert count == 2
+
+        alice = await store.get_sender_profile("alice@example.com")
+        assert alice is not None
+        assert alice.display_name == "Alice"
+        assert alice.category == "client"
+        assert alice.email_count == 15
+
+        bob = await store.get_sender_profile("bob@example.com")
+        assert bob is not None
+        assert bob.category == "newsletter"
+        assert bob.email_count == 42
+        assert bob.auto_rule_candidate is True
+        assert bob.default_folder == "Reference/Newsletters"
+
+    @pytest.mark.asyncio
+    async def test_batch_upsert_empty_list(self, store: DatabaseStore) -> None:
+        """Test batch upsert with empty list returns 0."""
+        count = await store.upsert_sender_profiles_batch([])
+        assert count == 0
+
+    @pytest.mark.asyncio
+    async def test_batch_upsert_updates_existing(self, store: DatabaseStore) -> None:
+        """Test that batch upsert updates existing profiles."""
+        # Insert initial profile
+        await store.upsert_sender_profile(
+            email="update@example.com",
+            display_name="Original",
+            category="unknown",
+        )
+
+        # Batch upsert with new data
+        profiles = [
+            {
+                "email": "update@example.com",
+                "display_name": "Updated",
+                "category": "client",
+                "email_count": 25,
+                "auto_rule_candidate": True,
+                "default_folder": "Projects/Alpha",
+            },
+        ]
+        await store.upsert_sender_profiles_batch(profiles)
+
+        profile = await store.get_sender_profile("update@example.com")
+        assert profile is not None
+        assert profile.display_name == "Updated"
+        assert profile.category == "client"
+        assert profile.email_count == 25
+        assert profile.auto_rule_candidate is True
+        assert profile.default_folder == "Projects/Alpha"
+
+    @pytest.mark.asyncio
+    async def test_batch_upsert_preserves_category_on_unknown(self, store: DatabaseStore) -> None:
+        """Test that 'unknown' category doesn't overwrite existing category."""
+        # Insert with known category
+        await store.upsert_sender_profile(
+            email="keep@example.com",
+            category="client",
+        )
+
+        # Batch upsert with unknown category
+        profiles = [
+            {
+                "email": "keep@example.com",
+                "display_name": None,
+                "category": "unknown",
+                "email_count": 10,
+                "auto_rule_candidate": False,
+                "default_folder": None,
+            },
+        ]
+        await store.upsert_sender_profiles_batch(profiles)
+
+        profile = await store.get_sender_profile("keep@example.com")
+        assert profile is not None
+        assert profile.category == "client"  # Preserved
+
+    @pytest.mark.asyncio
+    async def test_batch_upsert_case_insensitive(self, store: DatabaseStore) -> None:
+        """Test that batch upsert lowercases email addresses."""
+        profiles = [
+            {
+                "email": "CasE@Example.COM",
+                "display_name": "Case Test",
+                "category": "unknown",
+                "email_count": 1,
+                "auto_rule_candidate": False,
+                "default_folder": None,
+            },
+        ]
+        await store.upsert_sender_profiles_batch(profiles)
+
+        profile = await store.get_sender_profile("case@example.com")
+        assert profile is not None
+        assert profile.display_name == "Case Test"
+
+
 class TestSnippetValidation:
     """Tests for snippet length validation."""
 
