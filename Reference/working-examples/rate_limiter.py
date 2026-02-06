@@ -1,0 +1,284 @@
+"""Rate limiting functionality for API requests.
+
+This module provides a token bucket rate limiter for controlling the rate of API calls
+to external services. It includes both a class-based implementation and decorators
+for easy application to functions.
+
+Key features:
+- Token bucket algorithm for precise rate limiting
+- Support for both async and sync functions
+- Configurable for different services with different rate limits
+- Clear error handling and logging
+
+Standard Rate Limits by Service:
+- ms_graph: 10 requests per second (Microsoft Graph API)
+- pdl_api: 1 request per second (People Data Labs API)
+- abstract_api: 1 request per second (Abstract API)
+- enrichment_manager: 1 request per second (Company Enrichment Manager)
+"""
+
+import time
+import asyncio
+import functools
+from typing import Callable, Dict, Any, Optional, TypeVar, cast
+from datetime import datetime
+import structlog
+
+from backend.app.core.errors import RateLimitExceeded
+
+logger = structlog.get_logger(__name__)
+
+# Type variables for better type hinting
+F = TypeVar('F', bound=Callable[..., Any])
+AsyncF = TypeVar('AsyncF', bound=Callable[..., Any])
+
+class TokenBucket:
+    """
+    Token bucket rate limiter implementation.
+    
+    This implements a token bucket algorithm where tokens are added at a fixed rate,
+    and each request consumes a token. If no tokens are available, the request is
+    delayed until a token becomes available.
+    
+    Example:
+        # Create a rate limiter that allows 1 request per second
+        limiter = TokenBucket(rate=1.0, capacity=1)
+        
+        # Use in an async function
+        async def make_api_call():
+            await limiter.consume()  # This will wait if needed
+            # Make your API call here
+    """
+    
+    def __init__(
+        self, 
+        rate: float = 1.0, 
+        capacity: int = 1,
+        initial_tokens: Optional[int] = None
+    ):
+        """
+        Initialize a token bucket rate limiter.
+        
+        Args:
+            rate: Token refill rate per second
+            capacity: Maximum number of tokens in the bucket
+            initial_tokens: Initial number of tokens in the bucket (defaults to capacity)
+        """
+        self.rate = rate  # tokens per second
+        self.capacity = capacity
+        self.tokens = capacity if initial_tokens is None else initial_tokens
+        self.last_refill = time.time()
+        self.lock = asyncio.Lock()
+        
+    async def consume(self, tokens: int = 1) -> bool:
+        """
+        Consume tokens from the bucket, waiting if needed.
+        
+        Args:
+            tokens: Number of tokens to consume
+            
+        Returns:
+            True if tokens were consumed
+            
+        Raises:
+            RateLimitExceeded: If tokens cannot be consumed even after waiting
+        """
+        if tokens > self.capacity:
+            logger.error(
+                "Attempted to consume more tokens than bucket capacity",
+                tokens=tokens,
+                capacity=self.capacity
+            )
+            raise RateLimitExceeded(f"Requested tokens ({tokens}) exceed bucket capacity ({self.capacity})")
+            
+        self._refill()
+        
+        if self.tokens >= tokens:
+            self.tokens -= tokens
+            return True
+            
+        # Need to wait for tokens to refill
+        required_tokens = tokens - self.tokens
+        wait_time = required_tokens / self.rate
+        
+        if wait_time > 20:  # Arbitrary large wait time limit
+            logger.warning(
+                "Rate limit would require excessive wait",
+                wait_time=wait_time,
+                tokens_needed=required_tokens
+            )
+            raise RateLimitExceeded(f"Rate limit exceeded, would require {wait_time:.2f}s wait")
+            
+        logger.debug(
+            "Waiting for token bucket refill", 
+            wait_time=wait_time,
+            tokens_needed=required_tokens
+        )
+        await asyncio.sleep(wait_time)
+        
+        # After waiting, try again with a fresh bucket
+        self._refill()
+        if self.tokens < tokens:
+            logger.error(
+                "Failed to get enough tokens even after waiting",
+                tokens=self.tokens,
+                required=tokens
+            )
+            raise RateLimitExceeded("Failed to get enough tokens even after waiting")
+            
+        self.tokens -= tokens
+        return True
+
+    def _refill(self):
+        """Refill tokens based on elapsed time."""
+        # Refill tokens based on elapsed time
+        now = time.time()
+        elapsed = now - self.last_refill
+        new_tokens = elapsed * self.rate
+        self.tokens = min(self.capacity, self.tokens + new_tokens)
+        self.last_refill = now
+
+# Global token bucket instances for different services
+_buckets: Dict[str, TokenBucket] = {}
+
+def get_bucket(name: str = "default", rate: float = 1.0, capacity: int = 1) -> TokenBucket:
+    """
+    Get or create a token bucket for the given name.
+    
+    Args:
+        name: Bucket name/identifier
+        rate: Token refill rate if creating a new bucket
+        capacity: Token capacity if creating a new bucket
+        
+    Returns:
+        TokenBucket instance
+    """
+    if name not in _buckets:
+        _buckets[name] = TokenBucket(rate=rate, capacity=capacity)
+    
+    return _buckets[name]
+
+def rate_limit(bucket_name: str = "default", tokens: int = 1, rate: float = 1.0, capacity: int = 1, 
+            max_calls: Optional[int] = None, time_window: Optional[int] = None) -> Callable[[F], F]:
+    """
+    Decorator to apply rate limiting to a function.
+    
+    This decorator can be used on both async and sync functions.
+    
+    Example:
+        @rate_limit(bucket_name="pdl_api", rate=1.0, capacity=1)
+        async def call_pdl_api():
+            # API call that will be rate limited to 1 call per second
+        
+        # Or using max_calls/time_window style:
+        @rate_limit(max_calls=10, time_window=60)
+        async def call_api():
+            # API call that will be rate limited to 10 calls per minute
+            
+    Args:
+        bucket_name: Name of the token bucket to use
+        tokens: Number of tokens to consume per call
+        rate: Token refill rate per second
+        capacity: Maximum number of tokens in the bucket
+        max_calls: Alternative rate limit style - max calls in time window
+        time_window: Time window in seconds for max_calls
+        
+    Returns:
+        Decorated function
+    """
+    # If using max_calls/time_window style, convert to rate/capacity
+    if max_calls is not None and time_window is not None:
+        rate = max_calls / time_window
+        capacity = max_calls
+        
+    def decorator(func: F) -> F:
+        @functools.wraps(func)
+        async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+            bucket = get_bucket(bucket_name, rate, capacity)
+            try:
+                await bucket.consume(tokens)
+                return await func(*args, **kwargs)
+            except Exception as e:
+                logger.error(
+                    "Error in rate-limited function", 
+                    error=str(e),
+                    function=func.__name__,
+                    bucket=bucket_name
+                )
+                raise
+        
+        @functools.wraps(func)
+        def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+            # For synchronous functions, handle rate limiting synchronously
+            bucket = get_bucket(bucket_name, rate, capacity)
+            try:
+                # Check if we can consume tokens
+                bucket._refill()
+                if bucket.tokens >= tokens:
+                    bucket.tokens -= tokens
+                else:
+                    # Need to wait - use blocking sleep
+                    required_tokens = tokens - bucket.tokens
+                    wait_time = required_tokens / bucket.rate
+
+                    if wait_time > 20:
+                        logger.warning(
+                            "Rate limit would require excessive wait",
+                            wait_time=wait_time,
+                            tokens_needed=required_tokens
+                        )
+                        raise RateLimitExceeded(f"Rate limit exceeded, would require {wait_time:.2f}s wait")
+
+                    logger.debug(
+                        "Waiting for token bucket refill (sync)",
+                        wait_time=wait_time,
+                        tokens_needed=required_tokens
+                    )
+                    time.sleep(wait_time)
+
+                    # After waiting, try again
+                    bucket._refill()
+                    if bucket.tokens < tokens:
+                        logger.error(
+                            "Failed to get enough tokens even after waiting",
+                            tokens=bucket.tokens,
+                            required=tokens
+                        )
+                        raise RateLimitExceeded("Failed to get enough tokens even after waiting")
+
+                    bucket.tokens -= tokens
+
+                return func(*args, **kwargs)
+            except Exception as e:
+                logger.error(
+                    "Error in rate-limited function",
+                    error=str(e),
+                    function=func.__name__,
+                    bucket=bucket_name
+                )
+                raise
+        
+        # Choose the appropriate wrapper based on whether the function is async
+        if asyncio.iscoroutinefunction(func):
+            return cast(F, async_wrapper)
+        else:
+            return cast(F, sync_wrapper)
+    
+    return decorator
+
+def with_rate_limit(func: F) -> F:
+    """
+    Simple decorator for backward compatibility with the email_ingestion service.
+    
+    This is a simplified version that uses default rate limiting settings.
+    For more control, use the rate_limit decorator directly.
+    
+    Args:
+        func: Function to decorate
+        
+    Returns:
+        Decorated function with rate limiting
+    """
+    # Default settings for MS Graph API (higher rate limit)
+    # Microsoft Graph API allows up to 10 requests per second per app
+    return rate_limit(bucket_name="ms_graph", rate=10.0, capacity=10)(func) 

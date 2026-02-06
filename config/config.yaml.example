@@ -1,0 +1,116 @@
+# config.yaml - Outlook AI Assistant Configuration
+# Copy this to config.yaml and customize for your needs
+
+schema_version: 1
+
+# -- Authentication (see Reference/spec/07-setup-guide.md for Azure AD setup) --
+auth:
+  client_id: ""                 # Azure AD Application (client) ID
+  tenant_id: ""                 # Azure AD Directory (tenant) ID - or "common" for personal accounts
+  scopes:
+    - "Mail.ReadWrite"
+    - "Mail.Send"
+    - "MailboxSettings.Read"
+    - "User.Read"
+  token_cache_path: "data/token_cache.json"
+
+# -- Timezone --
+timezone: "America/New_York"
+
+# -- Triage Settings --
+triage:
+  interval_minutes: 15          # How often to check for new mail
+  lookback_hours: 2             # On restart, re-check emails from this window
+  batch_size: 20                # Max emails to process per triage cycle
+  mode: "suggest"               # "suggest" or "auto" (future)
+  watch_folders: ["Inbox"]      # Folders to monitor
+
+# -- Model Selection (per task) --
+models:
+  bootstrap: "claude-sonnet-4-5-20250929"
+  bootstrap_merge: "claude-sonnet-4-5-20250929"
+  triage: "claude-haiku-4-5-20251001"
+  dry_run: "claude-haiku-4-5-20251001"
+  digest: "claude-haiku-4-5-20251001"
+  waiting_for: "claude-haiku-4-5-20251001"
+
+# -- Snippet Processing --
+snippet:
+  max_length: 1000              # Characters to extract from email body
+  strip_signatures: true        # Remove signature blocks
+  strip_disclaimers: true       # Remove legal disclaimer blocks
+  strip_forwarded_headers: true # Remove forwarded message headers
+
+# -- Projects (active, have defined outcomes) --
+# These will be populated by bootstrap, or you can define manually
+projects: []
+#  - name: "Example Project"
+#    folder: "Projects/Example"
+#    signals:
+#      subjects: ["example", "project keyword"]
+#      senders: ["*@example.com"]
+#      body_keywords: ["project term"]
+#    priority_default: "P2 - Important"
+
+# -- Areas (ongoing responsibilities, no end date) --
+areas: []
+#  - name: "Example Area"
+#    folder: "Areas/Example"
+#    signals:
+#      subjects: ["area keyword"]
+#      senders: []
+#      body_keywords: []
+#    priority_default: "P3 - Urgent Low"
+
+# -- Auto-routing rules (high confidence, skip Claude classification) --
+auto_rules: []
+#  - name: "GitHub Notifications"
+#    match:
+#      senders: ["notifications@github.com"]
+#    action:
+#      folder: "Reference/Dev Notifications"
+#      category: "FYI Only"
+#      priority: "P4 - Low"
+
+# -- Key contacts (for priority boost in classification) --
+key_contacts: []
+#  - email: "ceo@company.com"
+#    role: "CEO"
+#    priority_boost: 1
+
+# -- Aging thresholds --
+aging:
+  needs_reply_warning_hours: 24
+  needs_reply_critical_hours: 48
+  waiting_for_nudge_hours: 48
+  waiting_for_escalate_hours: 96
+
+# -- Digest settings --
+digest:
+  enabled: true
+  schedule: "08:00"             # Local time, daily
+  delivery: "stdout"            # "stdout", "email", or "file"
+  include_sections:
+    - "overdue_replies"
+    - "aging_waiting_for"
+    - "new_high_priority"
+    - "classification_summary"
+
+# -- Auto-rules hygiene --
+auto_rules_hygiene:
+  max_rules: 100
+  warn_on_conflicts: true
+  consolidation_check_days: 30
+
+# -- Suggestion queue management --
+suggestion_queue:
+  expire_after_days: 14
+  auto_approve_confidence: 0.95
+  auto_approve_delay_hours: 48
+
+# -- LLM request logging --
+llm_logging:
+  enabled: true
+  retention_days: 30
+  log_prompts: true
+  log_responses: true

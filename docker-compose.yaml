@@ -1,0 +1,50 @@
+version: "3.8"
+
+services:
+  outlook-assistant:
+    build: .
+    container_name: outlook-assistant
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./config:/app/config:rw           # Config files (writable for bootstrap + config editor)
+      - ./data:/app/data:rw               # SQLite DB, token cache, logs
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - PYTHONPATH=/app/src
+      - TZ=${TZ:-America/New_York}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # Optional: run bootstrap as a one-off command
+  # Usage: docker compose run --rm bootstrap --days 90
+  bootstrap:
+    build: .
+    profiles: ["tools"]
+    volumes:
+      - ./config:/app/config:rw
+      - ./data:/app/data:rw
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - PYTHONPATH=/app/src
+      - TZ=${TZ:-America/New_York}
+    entrypoint: ["uv", "run", "python", "-m", "assistant", "bootstrap"]
+
+  # Optional: run dry-run as a one-off command
+  # Usage: docker compose run --rm dry-run --days 30 --sample 20
+  dry-run:
+    build: .
+    profiles: ["tools"]
+    volumes:
+      - ./config:/app/config:ro
+      - ./data:/app/data:rw
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - PYTHONPATH=/app/src
+      - TZ=${TZ:-America/New_York}
+    entrypoint: ["uv", "run", "python", "-m", "assistant", "dry-run"]

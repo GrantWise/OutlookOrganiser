@@ -1,0 +1,43 @@
+# Secrets and credentials
+.env
+*.env
+Reference/working-examples/.env
+
+# User config (template is committed as config.yaml.example)
+config/config.yaml
+config/config.yaml.proposed
+
+# Data directory (SQLite DB, token cache)
+data/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.venv/
+.eggs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+*:Zone.Identifier
+*.Zone.Identifier
+
+# Logs
+logs/
+*.log
+
+# Coverage reports
+htmlcov/
+.coverage
+coverage.xml

@@ -1,0 +1,16 @@
+.git
+.env
+.venv
+data/
+config/config.yaml
+config/config.yaml.proposed
+__pycache__
+*.pyc
+.pytest_cache
+.vscode
+.idea
+htmlcov/
+.coverage
+Reference/
+tests/
+*.md
