@@ -66,6 +66,20 @@ class RateLimitExceeded(AssistantError):
     pass
 
 
+class ConflictError(GraphAPIError):
+    """Raised when a resource was modified by another client (412 Precondition Failed).
+
+    This happens during optimistic concurrency when the ETag doesn't match,
+    indicating the resource was modified between read and write.
+
+    Use this to implement retry logic for concurrent modifications.
+    """
+
+    def __init__(self, message: str, resource_id: str | None = None):
+        super().__init__(message, status_code=412, error_code="PreconditionFailed")
+        self.resource_id = resource_id
+
+
 class ClassificationError(AssistantError):
     """Raised when Claude classification fails after retries.
 

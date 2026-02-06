@@ -61,8 +61,8 @@ def validate_config(config_path: Path | None) -> None:
 @cli.command("serve")
 @click.option(
     "--host",
-    default="0.0.0.0",
-    help="Host to bind to",
+    default="127.0.0.1",
+    help="Host to bind to (default: localhost only for security)",
 )
 @click.option(
     "--port",

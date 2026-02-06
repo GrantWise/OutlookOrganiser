@@ -445,12 +445,8 @@ class AppConfig(BaseModel):
     # Operational settings
     aging: AgingConfig = Field(default_factory=AgingConfig)
     digest: DigestConfig = Field(default_factory=DigestConfig)
-    auto_rules_hygiene: AutoRulesHygieneConfig = Field(
-        default_factory=AutoRulesHygieneConfig
-    )
-    suggestion_queue: SuggestionQueueConfig = Field(
-        default_factory=SuggestionQueueConfig
-    )
+    auto_rules_hygiene: AutoRulesHygieneConfig = Field(default_factory=AutoRulesHygieneConfig)
+    suggestion_queue: SuggestionQueueConfig = Field(default_factory=SuggestionQueueConfig)
     llm_logging: LLMLoggingConfig = Field(default_factory=LLMLoggingConfig)
 
     # Optional: user email override (normally auto-detected from Graph API)

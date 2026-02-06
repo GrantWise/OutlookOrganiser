@@ -15,7 +15,7 @@ Build an AI-powered email management agent for Outlook using Microsoft Graph API
 | Phase | Status | Started | Completed |
 |-------|--------|---------|-----------|
 | 1. Project Scaffolding | ✅ Complete | 2026-02-06 | 2026-02-06 |
-| 2. Auth + Graph API | ⬜ Not Started | | |
+| 2. Auth + Graph API | ✅ Complete | 2026-02-06 | 2026-02-06 |
 | 3. Database Layer | ⬜ Not Started | | |
 | 4. Email Pipeline | ⬜ Not Started | | |
 | 5. Classification Engine | ⬜ Not Started | | |
@@ -109,12 +109,12 @@ dev = [
 ## Phase 2: Authentication & Graph API (Est: 1 day)
 
 ### Deliverables
-- [ ] 2.1 Implement MSAL device code flow authentication
-- [ ] 2.2 Implement token cache persistence
-- [ ] 2.3 Auto-detect user email from `/me` endpoint
-- [ ] 2.4 Create base Graph API client with retry logic
-- [ ] 2.5 Implement folder operations (list, create, create subfolder)
-- [ ] 2.6 Implement message operations (list with pagination, move, set categories)
+- [x] 2.1 Implement MSAL device code flow authentication
+- [x] 2.2 Implement token cache persistence
+- [x] 2.3 Auto-detect user email from `/me` endpoint
+- [x] 2.4 Create base Graph API client with retry logic
+- [x] 2.5 Implement folder operations (list, create, create subfolder)
+- [x] 2.6 Implement message operations (list with pagination, move, set categories)
 
 ### Files to Create
 ```

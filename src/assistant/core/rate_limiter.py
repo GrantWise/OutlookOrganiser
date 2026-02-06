@@ -107,9 +107,7 @@ class TokenBucket:
                     wait_time=wait_time,
                     tokens_needed=required_tokens,
                 )
-                raise RateLimitExceeded(
-                    f"Rate limit exceeded, would require {wait_time:.2f}s wait"
-                )
+                raise RateLimitExceeded(f"Rate limit exceeded, would require {wait_time:.2f}s wait")
 
         # Release lock during sleep to allow other consumers to check
         logger.debug(
@@ -267,9 +265,7 @@ def rate_limit(
                             tokens=bucket.tokens,
                             required=tokens,
                         )
-                        raise RateLimitExceeded(
-                            "Failed to get enough tokens even after waiting"
-                        )
+                        raise RateLimitExceeded("Failed to get enough tokens even after waiting")
                     bucket.tokens -= tokens
 
                 return func(*args, **kwargs)
@@ -292,7 +288,7 @@ def rate_limit(
     return decorator
 
 
-def with_rate_limit(func: F) -> F:
+def with_rate_limit[F: Callable[..., Any]](func: F) -> F:
     """Simple decorator with default MS Graph API rate limiting.
 
     This is a convenience decorator that uses default settings appropriate
