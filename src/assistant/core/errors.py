@@ -98,3 +98,20 @@ class DatabaseError(AssistantError):
     """Raised when SQLite operations fail."""
 
     pass
+
+
+class SnippetCleaningError(AssistantError):
+    """Raised when snippet cleaning fails (e.g., regex timeout).
+
+    This is a non-fatal error - processing should continue with the partial result.
+    Used for logging and monitoring rather than halting execution.
+
+    Attributes:
+        step: Which cleaning step failed
+        partial_result: The text cleaned up to the failure point
+    """
+
+    def __init__(self, message: str, step: str, partial_result: str):
+        super().__init__(message)
+        self.step = step
+        self.partial_result = partial_result
