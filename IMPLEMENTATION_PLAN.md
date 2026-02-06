@@ -18,8 +18,8 @@ Build an AI-powered email management agent for Outlook using Microsoft Graph API
 | 2. Auth + Graph API | ✅ Complete | 2026-02-06 | 2026-02-06 |
 | 3. Database Layer | ✅ Complete | 2026-02-06 | 2026-02-06 |
 | 4. Email Pipeline | ✅ Complete | 2026-02-06 | 2026-02-06 |
-| 5. Classification Engine | ⬜ Not Started | | |
-| 6. Bootstrap & Dry-Run | ⬜ Not Started | | |
+| 5. Classification Engine | ✅ Complete | 2026-02-06 | 2026-02-06 |
+| 6. Bootstrap & Dry-Run | ✅ Complete | 2026-02-06 | 2026-02-06 |
 | 7. Triage Engine & Web UI | ⬜ Not Started | | |
 
 Status: ⬜ Not Started | 🟡 In Progress | ✅ Complete | ❌ Blocked
@@ -295,72 +295,192 @@ For each new email with conversation_id:
 
 ---
 
-## Phase 5: Classification Engine (Est: 1 day)
+## Phase 5: Classification Engine (Est: 1.5 days)
 
 ### Deliverables
-- [ ] 5.1 Implement auto-rules pattern matching engine
-- [ ] 5.2 Create prompt templates (system prompt, tool definition)
-- [ ] 5.3 Implement Claude classifier with tool use
-- [ ] 5.4 Implement classification error handling (retry, fail after 3)
-- [ ] 5.5 Log all LLM requests to database
+- [x] 5.1 Implement auto-rules pattern matching engine (`fnmatch` for senders, case-insensitive substring for subjects)
+- [x] 5.2 Create prompt context assembler (system prompt, tool definition, conditional context sections)
+- [x] 5.3 Implement Claude classifier with tool use (`tool_choice` forced, model from config)
+- [x] 5.4 Support partial classification mode (inherited folder → Claude only classifies priority + action_type)
+- [x] 5.5 Implement classification error handling (SDK retries for transient, app-level retry for logical failures)
+- [x] 5.6 Log all LLM requests to database
 
 ### Files to Create
 ```
 src/assistant/classifier/
-├── auto_rules.py              # Pattern matching
-├── prompts.py                 # System prompt + tool definition
+├── auto_rules.py              # Pattern matching (fnmatch + substring)
+├── prompts.py                 # Context assembler + tool definition
 └── claude_classifier.py       # Tool use classification
 ```
 
 ### Auto-Rules Engine
 ```python
-# Match patterns with timeout
-import regex
+from fnmatch import fnmatch
 
 class AutoRulesEngine:
-    def match(self, email: dict) -> Optional[AutoRule]:
-        # Check sender patterns (wildcards like *@domain.com)
-        # Check subject patterns (case-insensitive)
-        # Return first matching rule or None
+    """Match emails against config auto_rules. Runs BEFORE Claude classification."""
+
+    def match(self, email: dict, rules: list[AutoRuleConfig]) -> AutoRuleConfig | None:
+        for rule in rules:
+            if self._matches_rule(email, rule.match):
+                return rule
+        return None
+
+    def _matches_rule(self, email: dict, match: AutoRuleMatch) -> bool:
+        sender_match = not match.senders or any(
+            fnmatch(email["sender_email"].lower(), pattern.lower())
+            for pattern in match.senders
+        )
+        subject_match = not match.subjects or any(
+            keyword.lower() in email["subject"].lower()
+            for keyword in match.subjects
+        )
+        # If both senders and subjects are specified, BOTH must match (AND logic)
+        # If only one is specified, that one is sufficient
+        if match.senders and match.subjects:
+            return sender_match and subject_match
+        return sender_match or subject_match
 ```
 
-### Claude Tool Definition
+**Why `fnmatch` instead of `regex`:** Config patterns use glob-style wildcards (`*@domain.com`, `notifications@github.com`). `fnmatch` handles these natively with no ReDoS risk. Reserve `regex` (with timeout) for any future advanced pattern needs.
+
+### Claude Tool Definition (from spec `04-prompts.md` Section 3)
 ```json
 {
   "name": "classify_email",
+  "description": "Classify an email into the organizational structure",
   "input_schema": {
+    "type": "object",
     "properties": {
-      "folder": {"type": "string"},
-      "priority": {"enum": ["P1 - Urgent Important", "P2 - Important", "P3 - Urgent Low", "P4 - Low"]},
-      "action_type": {"enum": ["Needs Reply", "Review", "Delegated", "FYI Only", "Waiting For", "Scheduled"]},
-      "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
-      "reasoning": {"type": "string"}
+      "folder": {
+        "type": "string",
+        "description": "Exact folder path from the structure (e.g., 'Projects/Tradecore Steel')"
+      },
+      "priority": {
+        "type": "string",
+        "enum": ["P1 - Urgent Important", "P2 - Important", "P3 - Urgent Low", "P4 - Low"]
+      },
+      "action_type": {
+        "type": "string",
+        "enum": ["Needs Reply", "Review", "Delegated", "FYI Only", "Waiting For", "Scheduled"]
+      },
+      "confidence": {
+        "type": "number",
+        "minimum": 0.0,
+        "maximum": 1.0,
+        "description": "Classification confidence score"
+      },
+      "reasoning": {
+        "type": "string",
+        "description": "One sentence explaining the classification"
+      },
+      "waiting_for_detail": {
+        "type": ["object", "null"],
+        "properties": {
+          "expected_from": { "type": "string" },
+          "description": { "type": "string" }
+        },
+        "description": "If action_type is Waiting For, who and what we're waiting for"
+      },
+      "suggested_new_project": {
+        "type": ["string", "null"],
+        "description": "If the email doesn't fit existing structure, suggest a new project name"
+      }
     },
     "required": ["folder", "priority", "action_type", "confidence", "reasoning"]
   }
 }
 ```
 
+### Forced Tool Use
+```python
+# CRITICAL: Force Claude to return a tool call, not free text.
+# Without this, an unattended agent may receive unparseable text responses.
+response = client.messages.create(
+    model=config.models.triage,  # Model from config, not hardcoded
+    max_tokens=1024,
+    system=system_prompt,
+    messages=messages,
+    tools=[CLASSIFY_EMAIL_TOOL],
+    tool_choice={"type": "tool", "name": "classify_email"},
+)
+```
+
+### Prompt Context Assembler
+
+The system prompt and user message have **7 conditional context sections** that must be assembled per-email (see `04-prompts.md` Section 3):
+
+```python
+class PromptAssembler:
+    """Builds classification prompts with conditional context sections."""
+
+    def build_system_prompt(self, config: AppConfig, preferences: str | None) -> str:
+        """Assembles system prompt with folder structure, key contacts, preferences."""
+        # - Folder list from config.projects + config.areas
+        # - Priority/action definitions (static)
+        # - Key contacts from config.key_contacts
+        # - Classification hints (static)
+        # - Learned preferences from agent_state (or "No learned preferences yet.")
+        # - Sender profile context (if available)
+
+    def build_user_message(self, email: dict, context: ClassificationContext) -> str:
+        """Assembles per-email user message with conditional sections."""
+        # Required sections: From, Subject, Received, Importance, Read status,
+        #                    Flag, Thread depth, Reply state, Body snippet
+        # Conditional sections (include only when available):
+        #   - inherited_folder: "Inherited folder (from thread): X"
+        #   - sender_history: "Sender history: 94% -> Projects/Tradecore (47/50)"
+        #   - sender_profile: "Sender profile: Category: newsletter | ..."
+        #   - thread_context: Prior messages formatted per spec
+```
+
+### Partial Classification (Inherited Folder)
+
+When thread inheritance provides a folder (see `03-agent-behaviors.md` Section 2):
+1. The `inherited_folder` line is included in the user message
+2. Claude still classifies **priority and action_type** (these can change within a thread)
+3. The classifier merges: inherited folder + Claude's priority/action_type + confidence 0.95
+4. The tool response's `folder` field is ignored in favor of the inherited value
+
 ### Error Handling
+
+**Transient errors (SDK handles automatically):**
+Configure `Anthropic(max_retries=3)` — the SDK retries 429, 5xx, timeouts, and connection errors with exponential backoff. No manual retry needed for these.
+
+**Logical failures (app-level retry):**
 | Error | Action |
 |-------|--------|
-| Network timeout / 5xx | Retry: 1s, 2s, 4s exponential backoff, max 3 attempts |
-| Rate limit (429) | Respect `Retry-After` header, pause cycle |
-| Invalid response | Log ERROR, mark `classification_status = 'failed'` |
-| Failed 3 times | Stop retrying, include in daily digest |
+| No tool call in response | Log WARNING, retry once (should not happen with `tool_choice` forced) |
+| Missing required fields in tool call | Log ERROR, mark `classification_status = 'failed'`, increment `classification_attempts` |
+| Invalid enum value (priority/action_type) | Log ERROR, mark `classification_status = 'failed'`, increment `classification_attempts` |
+| `classification_attempts >= 3` | Stop retrying, set `classification_status = 'failed'`, include in daily digest |
+| `anthropic.RateLimitError` (after SDK retries exhausted) | Respect `Retry-After` header, pause triage cycle, resume after delay |
+| `anthropic.APIConnectionError` (after SDK retries exhausted) | Log ERROR, skip email for this cycle, remains `pending` for next cycle |
+
+**Key principle:** SDK handles transient network/API errors. App code handles logical/semantic failures. No retry amplification.
 
 ### Verification Checklist
-- [ ] Auto-rules match sender wildcards correctly
-- [ ] Auto-rules match subjects case-insensitively
-- [ ] Claude returns structured tool call response
-- [ ] Tool call result parsed correctly
-- [ ] LLM requests logged to `llm_request_log` table
-- [ ] Retry logic works for transient failures
-- [ ] After 3 failures, email marked as failed
+- [x] Auto-rules match sender wildcards via `fnmatch` (e.g., `*@domain.com`)
+- [x] Auto-rules match subjects case-insensitively (substring match)
+- [x] Auto-rules AND logic: both sender+subject must match when both specified
+- [x] Auto-rules OR logic: either alone is sufficient when only one specified
+- [x] `tool_choice` forces tool call response (no free text)
+- [x] Model name sourced from `config.models.triage`, not hardcoded
+- [x] Tool call result parsed with all 7 fields (5 required + 2 optional)
+- [x] Partial classification: inherited folder merged with Claude's priority/action
+- [x] System prompt includes folder structure, key contacts, preferences placeholder
+- [x] User message conditionally includes sender_history, sender_profile, thread_context
+- [x] LLM requests logged to `llm_request_log` with token counts and duration
+- [x] SDK `max_retries=3` handles transient errors (no manual retry for 429/5xx)
+- [x] App-level retry for logical failures (missing fields, invalid enums)
+- [x] After 3 classification_attempts, email marked as `failed`
+- [x] `waiting_for_detail` captured when action_type is "Waiting For"
 
 ### Reference Files
 - `Reference/spec/04-prompts.md` - Complete prompt templates and tool definition
-- `Reference/spec/03-agent-behaviors.md` Section 2 - Error handling table
+- `Reference/spec/03-agent-behaviors.md` Section 2 - Error handling table, thread inheritance
+- Anthropic Cookbook `tool_use/extracting_structured_json.ipynb` - Tool use for classification pattern
+- Anthropic SDK README - Built-in retry behavior, error types
 
 ---
 

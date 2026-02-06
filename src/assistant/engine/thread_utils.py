@@ -286,9 +286,7 @@ class ThreadContextManager:
                 )
 
         # Check for new sender domain
-        prior_domains = {
-            extract_domain(e.sender_email) for e in prior_emails if e.sender_email
-        }
+        prior_domains = {extract_domain(e.sender_email) for e in prior_emails if e.sender_email}
         current_domain_lower = current_sender_domain.lower()
 
         if prior_domains and current_domain_lower not in prior_domains:
@@ -394,9 +392,7 @@ class ThreadContextManager:
                     # Parse received time
                     received_str = msg.get("receivedDateTime", "")
                     try:
-                        received_at = datetime.fromisoformat(
-                            received_str.replace("Z", "+00:00")
-                        )
+                        received_at = datetime.fromisoformat(received_str.replace("Z", "+00:00"))
                     except ValueError:
                         received_at = datetime.now()
 
