@@ -18,7 +18,7 @@ Every feature in this phase extends the existing foundation. No existing interfa
 
 | # | Feature | New Files | Extended Files |
 |---|---------|-----------|----------------|
-| 2A | Delta Queries | — | `graph/client.py`, `engine/triage.py` |
+| 2A | Delta Queries + Fast Polling | — | `graph/client.py`, `engine/triage.py` |
 | 2B | Waiting-For Tracker | `engine/waiting_for.py` | `engine/triage.py`, `web/routes.py` |
 | 2C | Daily Digest | `engine/digest.py` | `engine/triage.py`, `cli.py`, `web/routes.py`, `classifier/prompts.py` |
 | 2D | Learning from Corrections | `classifier/preference_learner.py` | `web/routes.py`, `classifier/prompts.py` |
@@ -27,10 +27,10 @@ Every feature in this phase extends the existing foundation. No existing interfa
 | 2G | Suggestion Queue Management | — | `engine/triage.py`, `db/store.py` |
 | 2H | Stats & Accuracy Dashboard | `web/templates/stats.html` | `web/routes.py`, `db/store.py` |
 | 2I | Sender Management Page | `web/templates/senders.html` | `web/routes.py`, `db/store.py` |
-| 2J | Webhook + Delta Hybrid | `graph/webhooks.py` | `web/routes.py`, `engine/triage.py` |
 | 2K | Confidence Calibration | — | `db/store.py`, stats dashboard |
-| 2L | Token Cache Encryption | — | `auth/msal_auth.py` |
 | 2M | Enhanced Graceful Degradation | — | `engine/triage.py`, `web/routes.py` |
+
+> **Removed features:** 2J (Webhook + Delta Hybrid) was removed per architecture decision — webhooks require public HTTPS infrastructure that is unjustified for a single-user Docker-local deployment. Delta query polling at 5-minute intervals achieves near-real-time without the complexity. 2L (Token Cache Encryption) was removed — file permissions (mode 600) provide sufficient protection for the Docker-local deployment model.
 
 ---
 
@@ -39,32 +39,39 @@ Every feature in this phase extends the existing foundation. No existing interfa
 Features are ordered by dependency chain and diminishing returns. Sub-phases can be committed independently — each is a self-contained increment.
 
 ```
-2A  Delta Queries               (foundation for 2J)
-2B  Waiting-For Tracker         (foundation for 2C)
-2C  Daily Digest                (enhanced by 2B for escalation levels, but works independently)
-2D  Learning from Corrections   (no dependencies, high value)
-2E  Sender Affinity Auto-Rules  (no dependencies, quick win)
-2F  Auto-Rules Hygiene          (pairs with 2E)
-2G  Suggestion Queue Management (no dependencies, small scope)
-2H  Stats & Accuracy Dashboard  (depends on correction data from 2D)
-2I  Sender Management Page      (no dependencies, UI-only)
-2J  Webhook + Delta Hybrid      (depends on 2A)
-2K  Confidence Calibration      (depends on 2H stats infrastructure)
-2L  Token Cache Encryption      (independent, security hardening)
-2M  Enhanced Graceful Degradation (independent, reliability)
+Priority 1 — Foundation:
+  2A  Delta Queries + Fast Polling  (replaces timestamp polling, enables 5-min cycles)
+
+Priority 2 — High Value, Independent:
+  2D  Learning from Corrections     (high ROI, no dependencies)
+  2G  Suggestion Queue Management   (small scope, quick win)
+  2E  Sender Affinity Auto-Rules    (quick win)
+
+Priority 3 — Active Tracking:
+  2B  Waiting-For Tracker           (foundation for 2C)
+  2C  Daily Digest                  (enhanced by 2B)
+  2F  Auto-Rules Hygiene            (pairs with 2E)
+
+Priority 4 — Dashboards:
+  2H  Stats & Accuracy Dashboard    (depends on correction data from 2D)
+  2K  Confidence Calibration        (integrates into 2H)
+  2I  Sender Management Page        (independent, UI-only)
+
+Priority 5 — Hardening:
+  2M  Enhanced Graceful Degradation (independent, reliability)
 ```
 
 ---
 
-## 2A: Delta Queries for Efficient Polling
+## 2A: Delta Queries + Fast Polling
 
 ### What It Does
 
-Replaces timestamp-based polling (`receivedDateTime > last_processed_timestamp`) with Microsoft Graph delta queries. Delta queries return only messages that have changed since the last sync, reducing API calls from O(all-recent-emails) to O(new-changes) per cycle.
+Replaces timestamp-based polling (`receivedDateTime > last_processed_timestamp`) with Microsoft Graph delta queries and reduces the polling interval from 15 minutes to 5 minutes. Delta queries return only messages that have changed since the last sync, reducing API calls from O(all-recent-emails) to O(new-changes) per cycle. This is the primary near-real-time mechanism — webhooks were removed per architecture decision (see `Reference/spec/09-architecture-decisions.md`).
 
 ### User-Facing Behavior
 
-No visible change. Triage cycles become faster and use fewer Graph API calls. The system silently falls back to timestamp polling if the delta token expires.
+Emails are processed within ~5 minutes of arrival instead of ~15 minutes. Triage cycles become faster and use fewer Graph API calls. The system silently falls back to timestamp polling if the delta token expires. The default `triage.interval_minutes` changes from 15 to 5.
 
 ### How It Builds on Existing Code
 
@@ -99,7 +106,7 @@ No schema changes. Uses existing `agent_state` key-value store:
 
 ### Config Changes
 
-None. Delta queries are an internal optimization, not user-configurable.
+The default polling interval changes from 15 minutes to 5 minutes. No new config fields are needed — delta queries are used automatically when a delta token is available in `agent_state`, falling back to timestamp polling otherwise.
 
 ### Error Handling
 
@@ -1057,131 +1064,6 @@ None.
 
 ---
 
-## 2J: Webhook + Delta Query Hybrid
-
-### What It Does
-
-Subscribes to Microsoft Graph change notifications on watched folders. When a new email arrives, the webhook triggers an immediate delta query cycle — reducing latency from "up to 15 minutes" to "seconds."
-
-### User-Facing Behavior
-
-Emails are processed within seconds of arrival instead of waiting for the next polling interval. The APScheduler-based polling continues as a safety net.
-
-### How It Builds on Existing Code
-
-**New file: `graph/webhooks.py`**
-
-```python
-class WebhookManager:
-    """Manage Graph API change notification subscriptions.
-
-    Handles subscription creation, renewal, and validation.
-    """
-
-    def __init__(
-        self,
-        graph_client: GraphClient,
-        callback_url: str,
-        store: Store,
-    ) -> None: ...
-
-    async def ensure_subscription(self) -> None:
-        """Create or renew subscription for watched folders.
-
-        Subscriptions expire after max 3 days for Outlook messages.
-        Check agent_state for existing subscription; renew if within
-        24 hours of expiry; create new if none exists.
-        """
-
-    async def handle_validation(self, validation_token: str) -> str:
-        """Handle webhook validation request from Microsoft.
-
-        Returns the validation token as plain text (required by Graph API).
-        """
-
-    async def handle_notification(self, notification: dict) -> None:
-        """Handle incoming change notification.
-
-        Triggers an immediate delta query cycle via the triage engine.
-        """
-```
-
-**`web/routes.py`** — Add webhook callback endpoint:
-
-```python
-@router.post("/api/webhooks/graph")
-async def graph_webhook(request: Request) -> Response:
-    """Microsoft Graph change notification callback.
-
-    Handles both validation requests and change notifications.
-    """
-```
-
-**`engine/triage.py`** — Add method to trigger immediate cycle:
-
-```python
-async def trigger_immediate_cycle(self) -> None:
-    """Trigger an immediate triage cycle (called by webhook handler).
-
-    Skips if a cycle is already in progress (debounce).
-    """
-```
-
-### Prerequisites
-
-- **Public URL**: Webhooks require a publicly accessible HTTPS endpoint. This needs either:
-  - A reverse proxy (e.g., ngrok for development, Cloudflare Tunnel for production)
-  - A cloud deployment with a public IP
-- **Feature 2A (Delta Queries)**: Must be implemented first — the webhook triggers a delta query cycle
-
-### Database Changes
-
-New `agent_state` keys:
-- `webhook_subscription_id` — Graph API subscription ID
-- `webhook_subscription_expiry` — expiry timestamp for renewal tracking
-
-### Config Changes
-
-New optional config section:
-
-```yaml
-webhooks:
-  enabled: false               # Disabled by default (requires public URL)
-  callback_url: ""             # Public HTTPS URL for webhook callbacks
-  secret: ""                   # Shared secret for notification validation
-```
-
-### Error Handling
-
-- Subscription creation failure: log ERROR, continue with polling-only mode
-- Subscription renewal failure: retry once, then log ERROR and let it expire (polling catches up)
-- Notification validation failure: return 200 OK (Microsoft retries otherwise)
-- Multiple rapid notifications: debounce — skip if cycle already running
-
-### Testing Strategy
-
-**Unit tests:**
-- Subscription creation and renewal logic
-- Validation request handling
-- Notification parsing
-- Debounce logic (skip if cycle running)
-
-**Integration tests:**
-- Full lifecycle: create subscription → receive notification → trigger delta cycle
-- Subscription renewal before expiry
-
-### Verification Checklist
-
-- [ ] Subscription created on startup (when enabled)
-- [ ] Validation requests handled correctly
-- [ ] Notifications trigger immediate triage cycle
-- [ ] Debounce prevents concurrent cycles
-- [ ] Subscription renewed before expiry
-- [ ] APScheduler polling continues as fallback
-- [ ] Graceful fallback when webhook unavailable
-
----
-
 ## 2K: Confidence Calibration
 
 ### What It Does
@@ -1261,94 +1143,6 @@ None. Calibration thresholds are constants (15% tolerance), not user-configurabl
 - [ ] Buckets calculated correctly
 - [ ] Alerts generated for miscalibrated buckets
 - [ ] Model upgrade recommendation shown when appropriate
-
----
-
-## 2L: Token Cache Encryption
-
-### What It Does
-
-Encrypts the MSAL token cache file at rest using Fernet symmetric encryption. The current implementation stores tokens in plain JSON (protected only by file permissions mode 600). Encryption adds defense-in-depth.
-
-### User-Facing Behavior
-
-Transparent. Tokens are encrypted/decrypted automatically. If the encryption key is lost, the user simply re-authenticates (device code flow).
-
-### How It Builds on Existing Code
-
-**`auth/msal_auth.py`** — Wrap the existing `SerializableTokenCache`:
-
-```python
-class EncryptedTokenCache:
-    """Fernet-encrypted wrapper around MSAL's SerializableTokenCache.
-
-    Encrypts the serialized token cache before writing to disk.
-    Decrypts on read. Key derived from machine ID + optional passphrase.
-    """
-
-    def __init__(self, cache_path: Path, encryption_key: bytes) -> None: ...
-
-    def save(self, cache: msal.SerializableTokenCache) -> None:
-        """Serialize, encrypt, and write to disk."""
-
-    def load(self) -> msal.SerializableTokenCache:
-        """Read, decrypt, and deserialize from disk.
-
-        If decryption fails (wrong key, corrupted file):
-        - Log WARNING
-        - Delete cache file
-        - Return empty cache (triggers re-auth)
-        """
-```
-
-**Key derivation:**
-
-```python
-def derive_encryption_key(passphrase: str | None = None) -> bytes:
-    """Derive Fernet key from machine identity + optional passphrase.
-
-    Uses PBKDF2 with machine-specific salt (hostname + machine-id).
-    If passphrase is None, uses empty string (still provides
-    encryption against casual file access, not targeted attacks).
-    """
-```
-
-### Dependencies
-
-Add `cryptography` to `pyproject.toml` (Fernet is part of the `cryptography` package).
-
-### Config Changes
-
-New optional config section:
-
-```yaml
-auth:
-  # ... existing fields ...
-  encrypt_token_cache: true      # Enable token cache encryption (default: true in Phase 2)
-  # encryption_passphrase: ""    # Optional additional passphrase
-```
-
-### Error Handling
-
-- Decryption failure (wrong key, corrupted file): delete cache, return empty cache, log WARNING
-- Missing `cryptography` package: fall back to unencrypted cache with WARNING
-- Migration from unencrypted to encrypted: detect plain JSON on first load, encrypt and rewrite
-
-### Testing Strategy
-
-**Unit tests:**
-- Encrypt → decrypt roundtrip
-- Decryption failure triggers re-auth (empty cache)
-- Migration from unencrypted to encrypted
-- Key derivation consistency
-
-### Verification Checklist
-
-- [ ] Token cache file is encrypted on disk
-- [ ] Tokens decrypt correctly on read
-- [ ] Decryption failure triggers clean re-auth
-- [ ] Migration from unencrypted to encrypted works
-- [ ] File permissions still mode 600
 
 ---
 
@@ -1455,10 +1249,10 @@ None. Degradation thresholds are constants (3 consecutive failures), not user-co
 | Pillar | Application in Phase 2 |
 |--------|----------------------|
 | Not Over-Engineered | Each feature is minimal — delta queries don't change the processing pipeline, just the fetch strategy. Preference learning uses existing prompt infrastructure. |
-| Sophisticated Where Needed | Delta query error recovery (410 Gone handling), webhook subscription renewal, encrypted token cache — complexity justified by reliability and security requirements. |
-| Robust Error Handling | Every feature specifies error scenarios with specific responses. No silent failures. Graceful fallbacks everywhere (delta → timestamp, AI digest → plain text, encrypted → unencrypted). |
+| Sophisticated Where Needed | Delta query error recovery (410 Gone handling), degradation state tracking — complexity justified by reliability requirements. |
+| Robust Error Handling | Every feature specifies error scenarios with specific responses. No silent failures. Graceful fallbacks everywhere (delta → timestamp, AI digest → plain text). |
 | Complete Observability | All new operations log with correlation IDs. Stats dashboard provides system-wide visibility. Preference learning is transparent (preferences visible in stats page). |
-| Proven Patterns | FastAPI routes, APScheduler jobs, aiosqlite queries, Fernet encryption — all standard Python patterns. No custom frameworks. |
+| Proven Patterns | FastAPI routes, APScheduler jobs, aiosqlite queries — all standard Python patterns. No custom frameworks. |
 
 ### Unix Philosophy
 
@@ -1466,7 +1260,7 @@ None. Degradation thresholds are constants (3 consecutive failures), not user-co
 |------|----------------------|
 | Representation | Auto-rules in config YAML, classification preferences in natural language, confidence thresholds in config — knowledge in data, not code. |
 | Least Surprise | Delta queries are invisible to the user. Digest format matches the spec exactly. Auto-rules work identically whether manually created or auto-generated. |
-| Modularity | Each feature is a self-contained module: `waiting_for.py`, `digest.py`, `preference_learner.py`, `webhooks.py`. Clear interfaces, no tangled dependencies. |
+| Modularity | Each feature is a self-contained module: `waiting_for.py`, `digest.py`, `preference_learner.py`. Clear interfaces, no tangled dependencies. |
 | Separation | Thresholds (policy) in config; checking logic (mechanism) in code. Digest content (data) separate from formatting (Claude prompt). |
 | Composition | Features compose: delta queries feed triage cycles, waiting-for feeds digest, corrections feed preference learning. Standard interfaces throughout. |
 | Silence | No debug spam. Structured logging for significant events only. Digest is concise and actionable. |
@@ -1507,14 +1301,8 @@ learning:
   lookback_days: 7
   max_preferences_words: 500
 
-webhooks:
-  enabled: false
-  callback_url: ""
-  secret: ""
-
 stats:
   default_lookback_days: 30
-
-auth:
-  encrypt_token_cache: true
 ```
+
+> **Note:** The `webhooks` and `auth.encrypt_token_cache` config sections from earlier drafts have been removed per architecture decisions. See `Reference/spec/09-architecture-decisions.md`.

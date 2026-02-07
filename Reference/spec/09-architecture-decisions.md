@@ -97,12 +97,12 @@ Instead of webhooks, Phase 2 upgrades the existing polling mechanism:
 **Phase 2 upgrade:**
 
 1. **Implement delta queries** as a drop-in replacement for full-list polling. Use `GET /me/mailFolders('Inbox')/messages/delta?$select=subject,from,receivedDateTime,categories` and persist the `deltaLink` in `agent_state`.
-2. **Reduce polling interval to 2–3 minutes.** Delta queries are extremely lightweight — they return only changes since the last sync. At ~100 emails/day, most delta queries will return zero results and consume negligible API quota.
+2. **Reduce polling interval to 5 minutes.** Delta queries are extremely lightweight — they return only changes since the last sync. At ~100 emails/day, most delta queries will return zero results and consume negligible API quota.
 3. **Keep APScheduler** as the trigger mechanism (no webhook infrastructure needed).
 4. **Handle 410 Gone** (delta token expiry) as already specified: log warning, fall back to timestamp-based query, re-establish delta token on next cycle.
 5. **Handle deduplication** as already specified: collect all message IDs from delta response, deduplicate by `id`, check for folder moves on existing messages.
 
-**Latency impact:** Worst case 2–3 minutes vs. "seconds" with webhooks. For a CEO reviewing email in batches, this is imperceptible. The Graph API rate limit of 10,000 requests per 10 minutes makes 2-minute polling entirely safe.
+**Latency impact:** Worst case 5 minutes vs. "seconds" with webhooks. For a CEO reviewing email in batches, this is imperceptible. The Graph API rate limit of 10,000 requests per 10 minutes makes 5-minute polling entirely safe.
 
 **API efficiency:** Delta queries with an active token typically return responses in <100ms with payloads under 1KB when there are no changes. This is dramatically more efficient than the current full-list polling.
 
@@ -116,8 +116,8 @@ The following Phase 2 items are unaffected by this architecture decision:
 4. Delta queries for efficient inbox polling ← **now the primary near-real-time mechanism, not just an efficiency upgrade**
 5. Confidence calibration
 6. Sender affinity auto-rules
-7. Token cache encryption at rest
-8. ~~Webhook + delta query hybrid~~ → **REMOVED (replaced by item 4 with aggressive interval)**
+7. ~~Token cache encryption at rest~~ → **REMOVED (file permissions mode 600 sufficient for Docker-local)**
+8. ~~Webhook + delta query hybrid~~ → **REMOVED (replaced by item 4 with 5-minute polling)**
 9. Auto-rules hygiene
 10. Suggestion queue management
 11. Stats & accuracy dashboard (`/stats`)
@@ -128,18 +128,17 @@ The following Phase 2 items are unaffected by this architecture decision:
 
 For clarity, the revised Phase 2 build list is:
 
-1. Waiting-for tracker (automatic detection + manual marking)
-2. Daily digest generation
-3. Learning from corrections via classification preferences memory
-4. **Delta queries with 2–3 minute polling interval** (replaces both the "delta queries for efficiency" item and the "webhook hybrid" item — these are now one feature)
-5. Confidence calibration
-6. Sender affinity auto-rules
-7. Token cache encryption at rest
-8. Auto-rules hygiene
-9. Suggestion queue management
-10. Stats & accuracy dashboard (`/stats`)
-11. Sender management page (`/senders`)
-12. Graceful degradation
+1. **Delta queries with 5-minute polling interval** (replaces both the "delta queries for efficiency" item and the "webhook hybrid" item — these are now one feature)
+2. Learning from corrections via classification preferences memory
+3. Suggestion queue management (auto-expire + auto-approve)
+4. Sender affinity auto-rules
+5. Waiting-for tracker enhancement
+6. Daily digest generation
+7. Auto-rules hygiene
+8. Stats & accuracy dashboard (`/stats`)
+9. Confidence calibration (integrates into stats dashboard)
+10. Sender management page (`/senders`)
+11. Enhanced graceful degradation
 
 ---
 
@@ -171,8 +170,8 @@ Section 8 of `05-graph-api.md` should be understood as **Phase 4 reference mater
 
 Section 7 of `05-graph-api.md` ("Delta Query Polling") becomes the primary near-real-time mechanism. The only change from what's already specified:
 
-- **Polling interval:** Change from the Phase 1 default of 15 minutes to **2–3 minutes** once delta queries are implemented
-- **Scheduler configuration:** The `triage.poll_interval_minutes` config value should be updated to support sub-5-minute intervals. Consider renaming or adding `triage.delta_poll_interval_seconds` for finer control (e.g., 120 seconds)
+- **Polling interval:** Change from the Phase 1 default of 15 minutes to **5 minutes** once delta queries are implemented
+- **No new config fields needed:** The existing `triage.interval_minutes` field is sufficient — just change the default to 5
 
 Everything else in Section 7 (delta token persistence, 410 Gone handling, deduplication, pagination) is implemented exactly as specified.
 
@@ -204,21 +203,18 @@ Phase 4 addition (future, not now):
 ```yaml
 triage:
   # Phase 1 default: 15 minutes (full-list polling)
-  # Phase 2 upgrade: 2-3 minutes (delta query polling)
-  poll_interval_minutes: 3
-
-  # Phase 2: enable delta queries (replaces full-list polling)
-  use_delta_queries: true  # default: false in Phase 1, true in Phase 2
+  # Phase 2 default: 5 minutes (delta query polling)
+  interval_minutes: 5
 ```
+
+No `use_delta_queries` flag is needed — delta queries are used automatically when a delta token is available in `agent_state`, falling back to timestamp polling otherwise. This keeps the config surface minimal.
 
 ### 8.2 Removed Config Values
 
-The following config values mentioned or implied in the webhook specification are **not needed**:
+The following config values mentioned or implied in earlier specifications are **not needed**:
 
-- `webhook.notification_url` — no public endpoint
-- `webhook.lifecycle_notification_url` — no webhook subscriptions
-- `webhook.client_state` — no webhook validation
-- `webhook.renewal_interval_hours` — no subscription management
+- `webhook.*` — no public endpoint, no webhook subscriptions (removed from Phase 2)
+- `auth.encrypt_token_cache` — file permissions mode 600 sufficient for Docker-local (removed from Phase 2)
 
 ---
 
@@ -227,7 +223,7 @@ The following config values mentioned or implied in the webhook specification ar
 | Document | Impact | Details |
 |----------|--------|---------|
 | `01-overview.md` | Phase 2 item list updated | Item 8 (webhooks) removed, item 4 (delta queries) expanded to include near-real-time polling |
-| `02-config-and-schema.md` | Minor config additions | `use_delta_queries` flag, updated `poll_interval_minutes` guidance |
+| `02-config-and-schema.md` | Minor config additions | Updated `interval_minutes` default guidance |
 | `03-agent-behaviors.md` | No changes | Triage engine behaviour unchanged — it's triggered by scheduler regardless of polling mechanism |
 | `04-prompts.md` | No changes | Classification prompts are infrastructure-agnostic |
 | `05-graph-api.md` | Section 8 reclassified as Phase 4 reference | Delta queries (Section 7) become the primary near-real-time mechanism |
@@ -243,7 +239,7 @@ The core insight is that **infrastructure complexity should be proportional to u
 
 - SQLite > PostgreSQL (zero config, no external service, no connection management)
 - Local Docker > Azure Container Apps (zero cost, no deployment pipeline, no Azure subscription management)
-- Delta query polling > Webhooks (zero public infrastructure, 2-minute latency is imperceptible, dramatically simpler implementation)
+- Delta query polling > Webhooks (zero public infrastructure, 5-minute latency is imperceptible, dramatically simpler implementation)
 - Delegated permissions > Application permissions (inherently scoped, no Exchange RBAC configuration)
 
 Every one of these decisions reverses naturally when the user count grows beyond one. The architecture is designed so that reversal is a bounded migration task, not a rewrite.

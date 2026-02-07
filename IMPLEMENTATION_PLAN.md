@@ -20,7 +20,10 @@ Build an AI-powered email management agent for Outlook using Microsoft Graph API
 | 4. Email Pipeline | ✅ Complete | 2026-02-06 | 2026-02-06 |
 | 5. Classification Engine | ✅ Complete | 2026-02-06 | 2026-02-06 |
 | 6. Bootstrap & Dry-Run | ✅ Complete | 2026-02-06 | 2026-02-06 |
-| 7. Triage Engine & Web UI | ⬜ Not Started | | |
+| 7. Triage Engine & Web UI | ✅ Complete | 2026-02-06 | 2026-02-06 |
+| 8. Classification Chat Assistant | ✅ Complete | 2026-02-07 | 2026-02-07 |
+
+**Phase 1 Baseline:** 302 tests passing, 58% coverage (2026-02-07)
 
 Status: ⬜ Not Started | 🟡 In Progress | ✅ Complete | ❌ Blocked
 
@@ -556,16 +559,16 @@ python -m assistant dry-run --days 90 --sample 20 [--limit N]
 ## Phase 7: Triage Engine & Web UI (Est: 2 days)
 
 ### Deliverables
-- [ ] 7.1 Implement triage engine with APScheduler
-- [ ] 7.2 Implement triage cycle with correlation IDs
-- [ ] 7.3 Create FastAPI application structure
-- [ ] 7.4 Create dashboard page (`/`)
-- [ ] 7.5 Create review queue page (`/review`)
-- [ ] 7.6 Implement approve/correct/reject API endpoints
-- [ ] 7.7 Create waiting-for page (`/waiting`)
-- [ ] 7.8 Create config editor page (`/config`)
-- [ ] 7.9 Create activity log page (`/log`)
-- [ ] 7.10 Add CLI commands: `serve`, `triage --once`
+- [x] 7.1 Implement triage engine with APScheduler
+- [x] 7.2 Implement triage cycle with correlation IDs
+- [x] 7.3 Create FastAPI application structure
+- [x] 7.4 Create dashboard page (`/`)
+- [x] 7.5 Create review queue page (`/review`)
+- [x] 7.6 Implement approve/correct/reject API endpoints
+- [x] 7.7 Create waiting-for page (`/waiting`)
+- [x] 7.8 Create config editor page (`/config`)
+- [x] 7.9 Create activity log page (`/log`)
+- [x] 7.10 Add CLI commands: `serve`, `triage --once`
 
 ### Files to Create
 ```
@@ -624,20 +627,20 @@ python -m assistant triage --once --dry-run  # No suggestions created
 ```
 
 ### Verification Checklist
-- [ ] Triage engine polls at configured interval
-- [ ] triage_cycle_id appears in all log entries for a cycle
-- [ ] Auto-rules route high-confidence emails correctly
-- [ ] Thread inheritance reduces Claude API calls
-- [ ] Suggestions stored in database correctly
-- [ ] Dashboard shows correct counts
-- [ ] Review queue displays pending suggestions
-- [ ] Approve action moves email via Graph API
-- [ ] Correct action stores correction and executes
-- [ ] Reject action marks suggestion rejected
-- [ ] Config editor validates YAML before saving
-- [ ] Activity log shows recent actions
-- [ ] `serve` starts both scheduler and web UI
-- [ ] `triage --once` runs single cycle
+- [x] Triage engine polls at configured interval
+- [x] triage_cycle_id appears in all log entries for a cycle
+- [x] Auto-rules route high-confidence emails correctly
+- [x] Thread inheritance reduces Claude API calls
+- [x] Suggestions stored in database correctly
+- [x] Dashboard shows correct counts
+- [x] Review queue displays pending suggestions
+- [x] Approve action moves email via Graph API
+- [x] Correct action stores correction and executes
+- [x] Reject action marks suggestion rejected
+- [x] Config editor validates YAML before saving
+- [x] Activity log shows recent actions
+- [x] `serve` starts both scheduler and web UI
+- [x] `triage --once` runs single cycle
 
 ### Reference Files
 - `Reference/spec/03-agent-behaviors.md` Section 2 - Triage engine flow
@@ -673,20 +676,35 @@ python -m assistant triage --once --dry-run  # No suggestions created
 
 ---
 
-## What's NOT in MVP (Deferred)
+## Phase 2: Intelligence (Next)
+
+See `guides/PHASE_2_INTELLIGENCE.md` for detailed specifications.
+
+| # | Feature | Status |
+|---|---------|--------|
+| 2A | Delta Queries + Fast Polling (5-min intervals) | ⬜ Not Started |
+| 2D | Learning from Corrections | ⬜ Not Started |
+| 2G | Suggestion Queue Management (auto-expire + auto-approve) | ⬜ Not Started |
+| 2E | Sender Affinity Auto-Rules | ⬜ Not Started |
+| 2B | Waiting-For Tracker Enhancement | ⬜ Not Started |
+| 2C | Daily Digest Generation | ⬜ Not Started |
+| 2F | Auto-Rules Hygiene | ⬜ Not Started |
+| 2H | Stats & Accuracy Dashboard | ⬜ Not Started |
+| 2K | Confidence Calibration | ⬜ Not Started |
+| 2I | Sender Management Page | ⬜ Not Started |
+| 2M | Enhanced Graceful Degradation | ⬜ Not Started |
+
+**Removed from Phase 2:** Webhooks (replaced by delta polling), Token Cache Encryption (file permissions sufficient).
+
+## What's NOT in Phase 1 or 2 (Deferred)
 
 | Feature | Target Phase |
 |---------|--------------|
-| Waiting-for tracker (automatic detection) | Phase 2 |
-| Daily digest generation | Phase 2 |
-| Learning from corrections (classification_preferences) | Phase 2 |
-| Delta queries for efficient polling | Phase 2 |
-| Stats/accuracy dashboard (`/stats`) | Phase 2 |
-| Sender management page (`/senders`) | Phase 2 |
-| Undo command | Phase 2 |
 | Autonomous mode (auto-execute high-confidence) | Phase 3 |
-| Webhook + delta hybrid | Phase 2 |
-| Token cache encryption | Phase 2 |
+| New project detection | Phase 3 |
+| Automatic archival | Phase 3 |
+| Weekly review report | Phase 3 |
+| Email digest delivery (via Mail.Send) | Phase 3 |
 
 ---
 
@@ -705,21 +723,26 @@ python -m assistant triage --once --dry-run  # No suggestions created
 ## Quick Reference: Key Commands
 
 ```bash
+# Activate venv (required before all commands)
+source .venv/bin/activate
+
 # Development
-uv sync                                    # Install dependencies
-uv run python -m assistant validate-config # Validate config
-uv run python -m assistant bootstrap --days 90  # Scan existing mail
-uv run python -m assistant dry-run --days 30    # Test classification
-uv run python -m assistant serve           # Start service (port 8080)
-uv run python -m assistant triage --once   # Single triage cycle
+pip install -e ".[dev]"                          # Install dependencies
+python -m assistant validate-config              # Validate config
+python -m assistant bootstrap --days 90          # Scan existing mail
+python -m assistant dry-run --days 30 --sample 20  # Test classification
+python -m assistant serve                        # Start service (port 8080)
+python -m assistant triage --once                # Single triage cycle
 
 # Testing
-uv run pytest                              # Run all tests
-uv run pytest tests/test_classifier.py     # Run specific tests
-uv run ruff check src/                     # Lint code
+pytest                                           # Run all tests
+pytest tests/test_classifier.py                  # Run specific tests
+pytest --cov=src/assistant                       # With coverage
+ruff check src/ tests/                           # Lint code
+ruff format src/ tests/                          # Format code
 
 # Docker
-docker compose up -d                       # Start service
-docker compose run --rm bootstrap --days 90  # Run bootstrap
-docker logs outlook-assistant              # View logs
+docker compose up -d                             # Start service
+docker compose run --rm bootstrap --days 90      # Run bootstrap
+docker logs outlook-assistant                    # View logs
 ```
