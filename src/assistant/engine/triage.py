@@ -513,13 +513,9 @@ class TriageEngine:
         # Build classification context
         context = ClassificationContext(
             inherited_folder=inherited_folder,
-            thread_context=(
-                self._format_thread_context(thread_context) if thread_context else None
-            ),
-            sender_history=(sender_history.format_for_prompt() if sender_history else None),
-            sender_profile=(
-                self._format_sender_profile(sender_profile) if sender_profile else None
-            ),
+            thread_context=thread_context,
+            sender_history=sender_history,
+            sender_profile=sender_profile,
             thread_depth=thread_context.thread_depth if thread_context else 0,
             has_user_reply=has_user_reply,
         )
@@ -738,42 +734,3 @@ class TriageEngine:
             self._consecutive_failures = 0
             self._degraded_mode = False
 
-    @staticmethod
-    def _format_thread_context(thread_context: Any) -> str | None:
-        """Format thread context for the classification prompt.
-
-        Args:
-            thread_context: ThreadContext from thread_utils
-
-        Returns:
-            Formatted string for prompt, or None if empty
-        """
-        if not thread_context or not thread_context.messages:
-            return None
-
-        lines = []
-        for msg in thread_context.messages[:3]:
-            sender = msg.sender_name or msg.sender_email
-            lines.append(f'- {sender}: "{msg.subject}" ({msg.snippet[:100]}...)')
-
-        return "\n".join(lines)
-
-    @staticmethod
-    def _format_sender_profile(sender_profile: Any) -> str | None:
-        """Format sender profile for the classification prompt.
-
-        Args:
-            sender_profile: SenderProfile from db.store
-
-        Returns:
-            Formatted string for prompt, or None if unknown category
-        """
-        if not sender_profile or sender_profile.category == "unknown":
-            return None
-
-        parts = [f"Category: {sender_profile.category}"]
-        if sender_profile.default_folder:
-            parts.append(f"Default folder: {sender_profile.default_folder}")
-        parts.append(f"Email count: {sender_profile.email_count}")
-
-        return ", ".join(parts)

@@ -418,14 +418,16 @@ class MessageManager:
         """
         params = {
             "$filter": f"conversationId eq '{conversation_id}'",
-            "$orderby": "receivedDateTime desc",
             "$top": max_messages,
-            "$select": select or "id,subject,from,receivedDateTime,bodyPreview",
+            "$select": select
+            or "id,subject,from,receivedDateTime,bodyPreview,conversationIndex",
         }
 
         response = self.client.get("/me/messages", params=params)
 
         messages = response.get("value", [])
+        # Sort client-side (can't combine $filter on conversationId with $orderby)
+        messages.sort(key=lambda m: m.get("receivedDateTime", ""), reverse=True)
 
         logger.debug(
             "Thread messages fetched",
