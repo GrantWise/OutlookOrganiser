@@ -375,8 +375,16 @@ async def approve_suggestion(
 
         if folder_manager and message_manager and approved:
             folder_id = folder_manager.get_folder_id(approved.approved_folder)
-            if folder_id:
-                message_manager.move_message(suggestion.email_id, folder_id)
+            if not folder_id:
+                # Auto-create missing folder (and parents)
+                created = folder_manager.create_folder(approved.approved_folder)
+                folder_id = created["id"]
+                logger.info(
+                    "auto_created_folder",
+                    path=approved.approved_folder,
+                    folder_id=folder_id[:20] + "...",
+                )
+            message_manager.move_message(suggestion.email_id, folder_id)
 
             categories = []
             if approved.approved_priority:
@@ -477,8 +485,10 @@ async def bulk_approve(
 
                     if folder_manager and message_manager and approved:
                         folder_id = folder_manager.get_folder_id(approved.approved_folder)
-                        if folder_id:
-                            message_manager.move_message(s.email_id, folder_id)
+                        if not folder_id:
+                            created = folder_manager.create_folder(approved.approved_folder)
+                            folder_id = created["id"]
+                        message_manager.move_message(s.email_id, folder_id)
 
                         categories = []
                         if approved.approved_priority:
