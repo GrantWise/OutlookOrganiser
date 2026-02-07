@@ -59,4 +59,27 @@
     </div>
 </div>
 {% endif %}
+
+<!-- Chat panel (slide-out) -->
+<div id="chat-panel" class="chat-panel">
+    <div class="chat-panel-header">
+        <div>
+            <h3 id="chat-panel-title">Discuss Classification</h3>
+            <p id="chat-panel-subtitle" class="chat-panel-subtitle"></p>
+        </div>
+        <button class="btn-close-chat" type="button" id="chat-close">&times;</button>
+    </div>
+    <div class="chat-panel-body" id="chat-messages"></div>
+    <div class="chat-loading" id="chat-loading">
+        <span class="chat-loading-dot"></span>
+        <span class="chat-loading-dot"></span>
+        <span class="chat-loading-dot"></span>
+    </div>
+    <div class="chat-panel-footer">
+        <textarea id="chat-input" class="chat-input" rows="2"
+                  placeholder="Ask about this classification..."></textarea>
+        <button class="btn btn-primary btn-send-chat" id="chat-send" type="button">Send</button>
+    </div>
+</div>
+<div id="chat-overlay" class="chat-overlay"></div>
 {% endblock %}

@@ -340,13 +340,38 @@ async def _run_dry_run(days: int, sample: int, limit: int | None) -> None:
     is_flag=True,
     help="Don't create suggestions",
 )
-def triage(once: bool, is_dry_run: bool) -> None:
+@click.option(
+    "--backlog-days",
+    type=int,
+    default=None,
+    help="Classify emails from local DB (last N days) and create suggestions",
+)
+def triage(once: bool, is_dry_run: bool, backlog_days: int | None) -> None:
     """Run triage engine.
 
     Without --once, starts the scheduler for continuous operation.
     With --once, runs a single triage cycle and exits.
+    With --backlog-days N, classifies DB emails from the last N days
+    and creates suggestions for web UI review.
     """
-    if once:
+    if backlog_days is not None:
+        if is_dry_run:
+            console.print("[red]Error:[/red] --backlog-days and --dry-run are mutually exclusive.")
+            sys.exit(1)
+        if not once:
+            console.print("[red]Error:[/red] --backlog-days requires --once.")
+            sys.exit(1)
+        try:
+            asyncio.run(_run_triage_backlog(backlog_days))
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Cancelled.[/yellow]")
+            sys.exit(130)
+        except SystemExit:
+            raise
+        except Exception as e:
+            console.print(f"\n[red]Error:[/red] {e}")
+            sys.exit(1)
+    elif once:
         try:
             asyncio.run(_run_triage_once(is_dry_run))
         except KeyboardInterrupt:
@@ -421,6 +446,71 @@ async def _run_triage_once(is_dry_run: bool) -> None:
     console.print(f"  Failed:      {result.failed}")
     if result.degraded_mode:
         console.print("  [yellow]Degraded mode: auto-rules only[/yellow]")
+
+
+async def _run_triage_backlog(days: int) -> None:
+    """Classify emails from the local database and create suggestions.
+
+    Loads emails from the last N days (previously saved by bootstrap or triage),
+    classifies them, and creates suggestions for review in the web UI.
+    Skips emails that already have suggestions.
+    """
+    from assistant.classifier.claude_classifier import EmailClassifier
+    from assistant.engine.thread_utils import ThreadContextManager
+    from assistant.engine.triage import TriageEngine
+    from assistant.graph.messages import SentItemsCache
+
+    deps = await _init_cli_deps()
+
+    thread_manager = ThreadContextManager(
+        store=deps.store,
+        message_manager=deps.message_manager,
+        snippet_cleaner=deps.snippet_cleaner,
+    )
+    classifier = EmailClassifier(
+        anthropic_client=deps.anthropic_client,
+        store=deps.store,
+        config=deps.config,
+    )
+    sent_cache = SentItemsCache(deps.message_manager)
+
+    engine = TriageEngine(
+        classifier=classifier,
+        store=deps.store,
+        message_manager=deps.message_manager,
+        folder_manager=deps.folder_manager,
+        snippet_cleaner=deps.snippet_cleaner,
+        thread_manager=thread_manager,
+        sent_cache=sent_cache,
+        config=deps.config,
+    )
+
+    console.print(
+        f"[bold]Backlog triage:[/bold] classifying emails from last {days} days\n"
+        "Emails with existing suggestions will be skipped.\n"
+    )
+
+    result = await engine.run_backlog_cycle(days)
+
+    # Print summary
+    console.print(f"\n[bold]Backlog Triage Summary[/bold] (cycle {result.cycle_id[:8]}...)")
+    console.print(f"  Duration:    {result.duration_ms}ms")
+    console.print(f"  DB emails:   {result.emails_fetched}")
+    console.print(f"  Processed:   {result.emails_processed}")
+    console.print(f"  Auto-ruled:  {result.auto_ruled}")
+    console.print(f"  Classified:  {result.classified}")
+    console.print(f"  Inherited:   {result.inherited}")
+    console.print(f"  Skipped:     {result.skipped}")
+    console.print(f"  Failed:      {result.failed}")
+
+    suggestions_created = result.auto_ruled + result.classified + result.inherited
+    if suggestions_created > 0:
+        console.print(
+            f"\n[green]{suggestions_created} suggestions created.[/green] "
+            "Start the web UI with [cyan]python -m assistant serve[/cyan] to review."
+        )
+    else:
+        console.print("\n[yellow]No new suggestions created.[/yellow]")
 
 
 async def _run_triage_continuous(is_dry_run: bool) -> None:

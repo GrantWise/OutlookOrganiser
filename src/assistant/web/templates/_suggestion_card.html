@@ -76,6 +76,12 @@
                 hx-swap="outerHTML swap:0.3s">
             Reject
         </button>
+        <button class="btn btn-discuss" type="button"
+                data-suggestion-id="{{ s.id }}"
+                data-email-subject="{{ email.subject if email else 'Unknown' }}"
+                data-sender-email="{{ email.sender_email if email else '' }}">
+            Discuss
+        </button>
         {% if email and email.web_link %}
         <a class="btn btn-link" href="{{ email.web_link }}" target="_blank" rel="noopener">
             Open in Outlook

@@ -33,6 +33,10 @@ Thumbs.db
 *:Zone.Identifier
 *.Zone.Identifier
 
+# Config backups and locks
+config/*.bak.*
+config/.config.lock
+
 # Logs
 logs/
 *.log

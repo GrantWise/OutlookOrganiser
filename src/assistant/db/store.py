@@ -435,6 +435,35 @@ class DatabaseStore:
             logger.error("Failed to get email", email_id=email_id, error=str(e))
             raise DatabaseError(f"Failed to get email {email_id}: {e}") from e
 
+    async def get_emails_batch(self, email_ids: list[str]) -> dict[str, Email]:
+        """Get multiple emails by ID in a single query.
+
+        Eliminates N+1 query patterns when enriching suggestions, waiting-for
+        items, or action logs with email data.
+
+        Args:
+            email_ids: List of Graph API message IDs
+
+        Returns:
+            Dict mapping email_id to Email dataclass (missing IDs are omitted)
+        """
+        if not email_ids:
+            return {}
+
+        try:
+            async with self._db() as db:
+                placeholders = ",".join("?" * len(email_ids))
+                cursor = await db.execute(
+                    f"SELECT * FROM emails WHERE id IN ({placeholders})",
+                    email_ids,
+                )
+                rows = await cursor.fetchall()
+                return {row["id"]: self._row_to_email(row) for row in rows}
+
+        except aiosqlite.Error as e:
+            logger.error("Failed to get emails batch", count=len(email_ids), error=str(e))
+            raise DatabaseError(f"Failed to get emails batch: {e}") from e
+
     async def email_exists(self, email_id: str) -> bool:
         """Check if an email exists in the database.
 
@@ -453,6 +482,61 @@ class DatabaseStore:
         except aiosqlite.Error as e:
             logger.error("Failed to check email existence", email_id=email_id, error=str(e))
             raise DatabaseError(f"Failed to check email existence: {e}") from e
+
+    async def has_suggestion(self, email_id: str) -> bool:
+        """Check if an email already has any suggestion.
+
+        Args:
+            email_id: The Graph API message ID
+
+        Returns:
+            True if any suggestion (pending, approved, or rejected) exists
+        """
+        try:
+            async with self._db() as db:
+                cursor = await db.execute(
+                    "SELECT 1 FROM suggestions WHERE email_id = ? LIMIT 1",
+                    (email_id,),
+                )
+                row = await cursor.fetchone()
+                return row is not None
+
+        except aiosqlite.Error as e:
+            logger.error("Failed to check suggestion existence", email_id=email_id, error=str(e))
+            raise DatabaseError(f"Failed to check suggestion existence: {e}") from e
+
+    async def get_suggestion_by_email_id(self, email_id: str) -> Suggestion | None:
+        """Get the most recent suggestion for an email.
+
+        Args:
+            email_id: The Graph API message ID
+
+        Returns:
+            Most recent Suggestion dataclass or None if not found
+        """
+        try:
+            async with self._db() as db:
+                cursor = await db.execute(
+                    """
+                    SELECT * FROM suggestions
+                    WHERE email_id = ?
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (email_id,),
+                )
+                row = await cursor.fetchone()
+                if not row:
+                    return None
+                return self._row_to_suggestion(row)
+
+        except aiosqlite.Error as e:
+            logger.error(
+                "Failed to get suggestion by email_id",
+                email_id=email_id,
+                error=str(e),
+            )
+            raise DatabaseError(f"Failed to get suggestion by email_id: {e}") from e
 
     async def get_thread_classification(self, conversation_id: str) -> tuple[str, str] | None:
         """Get the most recent classification for a thread.
@@ -910,6 +994,97 @@ class DatabaseStore:
         except aiosqlite.Error as e:
             logger.error("Failed to reject suggestion", suggestion_id=suggestion_id, error=str(e))
             raise DatabaseError(f"Failed to reject suggestion: {e}") from e
+
+    async def get_suggestions_by_conversation(self, conversation_id: str) -> list[Suggestion]:
+        """Get all suggestions for emails in a conversation thread.
+
+        Returns suggestions of any status (pending, approved, rejected, partial).
+
+        Args:
+            conversation_id: The Outlook conversation ID
+
+        Returns:
+            List of Suggestion dataclasses ordered by email received_at DESC
+        """
+        try:
+            async with self._db() as db:
+                cursor = await db.execute(
+                    """
+                    SELECT s.* FROM suggestions s
+                    JOIN emails e ON s.email_id = e.id
+                    WHERE e.conversation_id = ?
+                    ORDER BY e.received_at DESC
+                    """,
+                    (conversation_id,),
+                )
+                rows = await cursor.fetchall()
+                return [self._row_to_suggestion(row) for row in rows]
+
+        except aiosqlite.Error as e:
+            logger.error(
+                "Failed to get suggestions by conversation",
+                conversation_id=conversation_id,
+                error=str(e),
+            )
+            raise DatabaseError(f"Failed to get suggestions by conversation: {e}") from e
+
+    async def get_pending_suggestions_by_sender(self, sender_email: str) -> list[Suggestion]:
+        """Get pending suggestions for emails from a specific sender.
+
+        Args:
+            sender_email: The sender's email address
+
+        Returns:
+            List of pending Suggestion dataclasses ordered by received_at DESC
+        """
+        try:
+            async with self._db() as db:
+                cursor = await db.execute(
+                    """
+                    SELECT s.* FROM suggestions s
+                    JOIN emails e ON s.email_id = e.id
+                    WHERE e.sender_email = ? AND s.status = 'pending'
+                    ORDER BY e.received_at DESC
+                    """,
+                    (sender_email.lower(),),
+                )
+                rows = await cursor.fetchall()
+                return [self._row_to_suggestion(row) for row in rows]
+
+        except aiosqlite.Error as e:
+            logger.error(
+                "Failed to get pending suggestions by sender",
+                sender_email=sender_email,
+                error=str(e),
+            )
+            raise DatabaseError(f"Failed to get pending suggestions by sender: {e}") from e
+
+    async def update_email_inherited_folder(self, email_id: str, folder: str) -> None:
+        """Update the inherited_folder field on an email record.
+
+        Used when chat reclassification changes a thread's folder, ensuring
+        future thread inheritance uses the corrected classification.
+
+        Args:
+            email_id: The Graph API message ID
+            folder: The new folder path to set as inherited
+        """
+        try:
+            async with self._db() as db:
+                await db.execute(
+                    "UPDATE emails SET inherited_folder = ? WHERE id = ?",
+                    (folder, email_id),
+                )
+                await db.commit()
+
+        except aiosqlite.Error as e:
+            logger.error(
+                "Failed to update email inherited_folder",
+                email_id=email_id,
+                folder=folder,
+                error=str(e),
+            )
+            raise DatabaseError(f"Failed to update email inherited_folder: {e}") from e
 
     async def expire_old_suggestions(self, days: int) -> int:
         """Expire pending suggestions older than the specified days.

@@ -419,8 +419,7 @@ class MessageManager:
         params = {
             "$filter": f"conversationId eq '{conversation_id}'",
             "$top": max_messages,
-            "$select": select
-            or "id,subject,from,receivedDateTime,bodyPreview,conversationIndex",
+            "$select": select or "id,subject,from,receivedDateTime,bodyPreview,conversationIndex",
         }
 
         response = self.client.get("/me/messages", params=params)

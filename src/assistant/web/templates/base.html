@@ -98,6 +98,146 @@
                 }
             }
         });
+
+        // ---------------------------------------------------------------
+        // Chat panel
+        // ---------------------------------------------------------------
+        (function() {
+            var chatPanel = document.getElementById("chat-panel");
+            var chatOverlay = document.getElementById("chat-overlay");
+            if (!chatPanel) return; // Only present on review page
+
+            var chatMessages = document.getElementById("chat-messages");
+            var chatInput = document.getElementById("chat-input");
+            var chatSend = document.getElementById("chat-send");
+            var chatClose = document.getElementById("chat-close");
+            var chatLoading = document.getElementById("chat-loading");
+            var chatTitle = document.getElementById("chat-panel-title");
+            var chatSubtitle = document.getElementById("chat-panel-subtitle");
+
+            var currentSuggestionId = null;
+            var messageHistory = [];
+            var isSending = false;
+
+            // Open chat panel
+            document.addEventListener("click", function(evt) {
+                var btn = evt.target.closest(".btn-discuss");
+                if (!btn) return;
+                currentSuggestionId = parseInt(btn.dataset.suggestionId, 10);
+                var subject = btn.dataset.emailSubject || "Email";
+                var sender = btn.dataset.senderEmail || "";
+                chatTitle.textContent = "Discuss Classification";
+                chatSubtitle.textContent = subject + (sender ? " — " + sender : "");
+                messageHistory = [];
+                chatMessages.innerHTML = "";
+                chatPanel.classList.add("open");
+                if (chatOverlay) chatOverlay.classList.add("open");
+                chatInput.focus();
+            });
+
+            // Close chat panel
+            function closeChat() {
+                chatPanel.classList.remove("open");
+                if (chatOverlay) chatOverlay.classList.remove("open");
+                currentSuggestionId = null;
+                messageHistory = [];
+            }
+            chatClose.addEventListener("click", closeChat);
+            if (chatOverlay) chatOverlay.addEventListener("click", closeChat);
+
+            // Send message
+            function sendMessage() {
+                if (isSending) return;
+                var text = chatInput.value.trim();
+                if (!text || !currentSuggestionId) return;
+
+                // Append user message to UI
+                appendMessage("user", text);
+                messageHistory.push({ role: "user", content: text });
+                chatInput.value = "";
+                chatInput.style.height = "auto";
+
+                // Show loading
+                isSending = true;
+                chatLoading.style.display = "flex";
+                chatSend.disabled = true;
+
+                fetch("/api/chat", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        suggestion_id: currentSuggestionId,
+                        messages: messageHistory
+                    })
+                })
+                .then(function(res) {
+                    if (!res.ok) {
+                        return res.json().then(function(data) {
+                            throw new Error(data.detail || "Chat request failed");
+                        });
+                    }
+                    return res.json();
+                })
+                .then(function(data) {
+                    // Append assistant reply
+                    appendMessage("assistant", data.reply);
+                    messageHistory.push({ role: "assistant", content: data.reply });
+
+                    // Show tool results as status messages
+                    if (data.actions_taken && data.actions_taken.length > 0) {
+                        data.actions_taken.forEach(function(action) {
+                            appendMessage("tool-result", action.tool_name + ": " + action.result);
+                        });
+
+                        // If a reclassify happened, remove the suggestion card
+                        var hasReclassify = data.actions_taken.some(function(a) {
+                            return a.tool_name === "reclassify_email";
+                        });
+                        if (hasReclassify) {
+                            var card = document.getElementById("suggestion-" + currentSuggestionId);
+                            if (card) {
+                                card.style.transition = "opacity 0.3s, transform 0.3s";
+                                card.style.opacity = "0";
+                                card.style.transform = "translateX(50px)";
+                                setTimeout(function() { card.remove(); }, 300);
+                            }
+                        }
+                    }
+                })
+                .catch(function(err) {
+                    appendMessage("error", err.message || "Something went wrong");
+                })
+                .finally(function() {
+                    isSending = false;
+                    chatLoading.style.display = "none";
+                    chatSend.disabled = false;
+                    chatInput.focus();
+                });
+            }
+
+            chatSend.addEventListener("click", sendMessage);
+            chatInput.addEventListener("keydown", function(evt) {
+                if (evt.key === "Enter" && !evt.shiftKey) {
+                    evt.preventDefault();
+                    sendMessage();
+                }
+            });
+
+            // Auto-resize textarea
+            chatInput.addEventListener("input", function() {
+                this.style.height = "auto";
+                this.style.height = Math.min(this.scrollHeight, 120) + "px";
+            });
+
+            // Append a message bubble to the chat area
+            function appendMessage(type, text) {
+                var div = document.createElement("div");
+                div.className = "chat-message " + type;
+                div.textContent = text;
+                chatMessages.appendChild(div);
+                chatMessages.scrollTop = chatMessages.scrollHeight;
+            }
+        })();
     </script>
 </body>
 </html>

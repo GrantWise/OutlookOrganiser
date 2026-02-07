@@ -74,6 +74,7 @@ async def lifespan(app: FastAPI):
         app.state.folder_manager = None
         app.state.triage_engine = None
         app.state.scheduler = None
+        app.state.anthropic_client = None
         yield
         return
 
@@ -108,12 +109,14 @@ async def lifespan(app: FastAPI):
     # 4. Initialize classifier and triage engine
     triage_engine = None
     scheduler = None
+    app.state.anthropic_client = None
 
     if message_manager and folder_manager:
         try:
             import anthropic
 
             anthropic_client = anthropic.Anthropic(max_retries=3)
+            app.state.anthropic_client = anthropic_client
             snippet_cleaner = SnippetCleaner(max_length=config.snippet.max_length)
             thread_manager = ThreadContextManager(
                 store=store,

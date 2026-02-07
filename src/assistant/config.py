@@ -14,8 +14,12 @@ Usage:
         config = get_config()  # Get updated config
 """
 
+import fcntl
 import os
+import shutil
+import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -308,3 +312,95 @@ def reset_config() -> None:
         _current_config = None
         _config_path = None
         _config_mtime = 0.0
+
+
+def write_config_safely(config: AppConfig, config_path: Path | None = None) -> None:
+    """Validate, backup, and atomically write a config to disk.
+
+    Steps:
+        1. Serialize config to YAML
+        2. Round-trip validate (parse back and check via Pydantic)
+        3. Create timestamped backup of the existing file
+        4. Write to temp file, then atomic rename
+
+    After writing, resets the config singleton so the next get_config()
+    call reloads from disk.
+
+    Args:
+        config: The validated AppConfig to write.
+        config_path: Optional override for config file path. Defaults to
+            the standard config path.
+
+    Raises:
+        ConfigValidationError: If the round-trip validation fails.
+        ConfigLoadError: If writing the file fails.
+    """
+    target_path = config_path or _get_config_path()
+
+    # 1. Serialize to YAML
+    config_dict = config.model_dump(mode="python")
+    yaml_str = yaml.dump(config_dict, default_flow_style=False, sort_keys=False)
+
+    # 2. Round-trip validation — ensure the YAML we produce is valid
+    try:
+        AppConfig(**yaml.safe_load(yaml_str))
+    except (ValidationError, yaml.YAMLError) as e:
+        raise ConfigValidationError(
+            f"Config round-trip validation failed: {e}. The config was NOT written to disk."
+        ) from e
+
+    # 3-5. Acquire file lock to serialize concurrent config modifications.
+    # The lock file is separate from the config file to avoid interfering
+    # with atomic rename operations.
+    lock_path = target_path.parent / ".config.lock"
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        lock_fd = open(lock_path, "w")
+    except OSError as e:
+        raise ConfigLoadError(f"Failed to create config lock file: {e}") from e
+
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+
+        # 3. Create timestamped backup of the existing file
+        backup_path = None
+        if target_path.exists():
+            backup_path = target_path.with_suffix(f".yaml.bak.{int(time.time())}")
+            try:
+                shutil.copy2(target_path, backup_path)
+            except OSError as e:
+                raise ConfigLoadError(
+                    f"Failed to create config backup at {backup_path}: {e}. "
+                    f"The config was NOT written to disk."
+                ) from e
+
+        # 4. Write to temp file, then atomic rename
+        try:
+            fd, tmp_path_str = tempfile.mkstemp(dir=target_path.parent, suffix=".yaml.tmp")
+            tmp_path = Path(tmp_path_str)
+            try:
+                with os.fdopen(fd, "w") as f:
+                    f.write(yaml_str)
+                os.replace(tmp_path, target_path)
+            except BaseException:
+                # Clean up temp file on any failure
+                tmp_path.unlink(missing_ok=True)
+                raise
+        except OSError as e:
+            raise ConfigLoadError(
+                f"Failed to write config to {target_path}: {e}. "
+                f"{'Backup available at ' + str(backup_path) if backup_path else 'No backup created.'}"
+            ) from e
+
+        # 5. Reset singleton so next get_config() reloads from disk
+        reset_config()
+
+        logger.info(
+            "config_written_safely",
+            path=str(target_path),
+            backup=str(backup_path) if backup_path else None,
+        )
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        lock_fd.close()

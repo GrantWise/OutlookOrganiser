@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import yaml
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -20,8 +21,14 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, ValidationError
 
+from assistant.config import write_config_safely
 from assistant.config_schema import AppConfig
-from assistant.core.errors import DatabaseError, GraphAPIError
+from assistant.core.errors import (
+    ConfigLoadError,
+    ConfigValidationError,
+    DatabaseError,
+    GraphAPIError,
+)
 from assistant.core.logging import get_logger
 from assistant.db.store import DatabaseStore
 from assistant.web.dependencies import (
@@ -64,6 +71,81 @@ class ConfigUpdateRequest(BaseModel):
     """Request body for updating configuration."""
 
     yaml_content: str
+
+
+class ChatRequest(BaseModel):
+    """Request body for the chat classification assistant."""
+
+    suggestion_id: int
+    messages: list[dict[str, Any]]
+
+
+# ---------------------------------------------------------------------------
+# Shared Graph API operations
+# ---------------------------------------------------------------------------
+
+
+def execute_email_move(
+    email_id: str,
+    folder: str,
+    priority: str | None,
+    action_type: str | None,
+    folder_manager: Any,
+    message_manager: Any,
+) -> dict[str, Any]:
+    """Move an email to a folder via Graph API and set Outlook categories.
+
+    Resolves the folder ID (auto-creating the folder if it doesn't exist),
+    moves the message, and sets priority + action_type as Outlook categories.
+
+    The Graph API client methods are synchronous, matching the existing pattern
+    used throughout the codebase.
+
+    Args:
+        email_id: The Graph API message ID to move.
+        folder: Target folder path (e.g., 'Projects/Tradecore Steel').
+        priority: Priority label to set as category (e.g., 'P2 - Important').
+        action_type: Action type to set as category (e.g., 'Needs Reply').
+        folder_manager: FolderManager instance for folder resolution/creation.
+        message_manager: MessageManager instance for move/categorize.
+
+    Returns:
+        Dict with 'new_msg_id' (str) and 'graph_error' (str | None).
+    """
+    graph_error = None
+    new_msg_id = email_id
+
+    try:
+        folder_id = folder_manager.get_folder_id(folder)
+        if not folder_id:
+            created = folder_manager.create_folder(folder)
+            folder_id = created["id"]
+            logger.info(
+                "auto_created_folder",
+                path=folder,
+                folder_id=folder_id[:20] + "...",
+            )
+
+        moved_msg = message_manager.move_message(email_id, folder_id)
+        new_msg_id = moved_msg.get("id", email_id)
+
+        categories = []
+        if priority:
+            categories.append(priority)
+        if action_type:
+            categories.append(action_type)
+        if categories:
+            message_manager.set_categories(new_msg_id, categories)
+    except GraphAPIError as e:
+        graph_error = str(e)
+        logger.error(
+            "execute_email_move_failed",
+            email_id=email_id,
+            folder=folder,
+            error=str(e),
+        )
+
+    return {"new_msg_id": new_msg_id, "graph_error": graph_error}
 
 
 # ---------------------------------------------------------------------------
@@ -199,11 +281,13 @@ async def review_queue(
     """Review queue page with pending suggestions."""
     suggestions = await store.get_pending_suggestions(limit=200)
 
-    # Join email data for each suggestion
+    # Batch-fetch all emails in a single query (eliminates N+1)
+    email_ids = [s.email_id for s in suggestions]
+    emails_by_id = await store.get_emails_batch(email_ids)
+
     items = []
     for s in suggestions:
-        email = await store.get_email(s.email_id)
-        items.append({"suggestion": s, "email": email})
+        items.append({"suggestion": s, "email": emails_by_id.get(s.email_id)})
 
     # Build folder options for correction dropdowns
     folder_options = []
@@ -238,11 +322,15 @@ async def waiting_for(
     """Waiting-for tracker page."""
     waiting_items = await store.get_active_waiting_for()
 
+    # Batch-fetch all emails in a single query (eliminates N+1)
+    email_ids = [w.email_id for w in waiting_items if w.email_id]
+    emails_by_id = await store.get_emails_batch(email_ids)
+
     # Enrich with email data and age status
     items = []
     now = datetime.now()
     for w in waiting_items:
-        email = await store.get_email(w.email_id) if w.email_id else None
+        email = emails_by_id.get(w.email_id) if w.email_id else None
         age_hours = 0
         age_class = "age-fresh"
         if w.waiting_since:
@@ -301,12 +389,16 @@ async def activity_log(
     """Activity log page with filterable entries."""
     logs = await store.get_action_logs(limit=200, action_type=action_type)
 
+    # Batch-fetch all emails in a single query (eliminates N+1)
+    email_ids = [entry.email_id for entry in logs if entry.email_id]
+    emails_by_id = await store.get_emails_batch(email_ids)
+
     # Enrich with email subjects
     items = []
     for log_entry in logs:
         email_subject = None
         if log_entry.email_id:
-            email = await store.get_email(log_entry.email_id)
+            email = emails_by_id.get(log_entry.email_id)
             if email:
                 email_subject = email.subject
         items.append(
@@ -337,7 +429,6 @@ async def activity_log(
 async def approve_suggestion(
     suggestion_id: int,
     request: Request,
-    body: ApproveRequest | None = None,
     store: DatabaseStore = Depends(get_store),
 ):
     """Approve a suggestion, optionally with corrections.
@@ -352,7 +443,26 @@ async def approve_suggestion(
     if suggestion.status != "pending":
         raise HTTPException(status_code=409, detail="Suggestion already resolved")
 
-    body = body or ApproveRequest()
+    # Parse corrections from request body.
+    # HTMX sends form-encoded data (hx-vals), API clients send JSON.
+    body = ApproveRequest()
+    content_type = request.headers.get("content-type", "")
+    try:
+        if "application/json" in content_type:
+            import json
+
+            raw = await request.body()
+            if raw and raw.strip():
+                body = ApproveRequest(**json.loads(raw))
+        elif "form" in content_type:
+            form = await request.form()
+            body = ApproveRequest(
+                folder=form.get("folder") or None,
+                priority=form.get("priority") or None,
+                action_type=form.get("action_type") or None,
+            )
+    except (ValueError, Exception):
+        pass  # Use defaults — no corrections
 
     # Approve in database
     success = await store.approve_suggestion(
@@ -369,37 +479,19 @@ async def approve_suggestion(
 
     # Execute via Graph API
     graph_error = None
-    try:
-        folder_manager = request.app.state.folder_manager
-        message_manager = request.app.state.message_manager
+    folder_mgr = request.app.state.folder_manager
+    message_mgr = request.app.state.message_manager
 
-        if folder_manager and message_manager and approved:
-            folder_id = folder_manager.get_folder_id(approved.approved_folder)
-            if not folder_id:
-                # Auto-create missing folder (and parents)
-                created = folder_manager.create_folder(approved.approved_folder)
-                folder_id = created["id"]
-                logger.info(
-                    "auto_created_folder",
-                    path=approved.approved_folder,
-                    folder_id=folder_id[:20] + "...",
-                )
-            message_manager.move_message(suggestion.email_id, folder_id)
-
-            categories = []
-            if approved.approved_priority:
-                categories.append(approved.approved_priority)
-            if approved.approved_action_type:
-                categories.append(approved.approved_action_type)
-            if categories:
-                message_manager.set_categories(suggestion.email_id, categories)
-    except GraphAPIError as e:
-        graph_error = str(e)
-        logger.error(
-            "approve_graph_api_failed",
-            suggestion_id=suggestion_id,
-            error=str(e),
+    if folder_mgr and message_mgr and approved:
+        move_result = execute_email_move(
+            email_id=suggestion.email_id,
+            folder=approved.approved_folder,
+            priority=approved.approved_priority,
+            action_type=approved.approved_action_type,
+            folder_manager=folder_mgr,
+            message_manager=message_mgr,
         )
+        graph_error = move_result["graph_error"]
 
     # Log action
     await store.log_action(
@@ -568,7 +660,7 @@ async def update_config_api(
 
     # Validate against Pydantic schema
     try:
-        AppConfig(**yaml_data)
+        validated_config = AppConfig(**yaml_data)
     except ValidationError as e:
         errors = []
         for err in e.errors():
@@ -583,12 +675,21 @@ async def update_config_api(
             )
         raise HTTPException(status_code=422, detail=errors) from None
 
-    # Write to file
-    config_path = Path("config/config.yaml")
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(body.yaml_content)
+    # Write safely with backup and atomic replace
+    try:
+        write_config_safely(validated_config)
+    except (ConfigValidationError, ConfigLoadError) as e:
+        if request.headers.get("HX-Request"):
+            return HTMLResponse(
+                content=f'<div class="error-message">Write failed: {e}</div>',
+                status_code=500,
+            )
+        raise HTTPException(status_code=500, detail=f"Config write failed: {e}") from None
 
-    logger.info("config_saved", path=str(config_path))
+    # Invalidate folder cache so config changes take effect immediately
+    folder_mgr = getattr(request.app.state, "folder_manager", None)
+    if folder_mgr:
+        folder_mgr.refresh_cache()
 
     if request.headers.get("HX-Request"):
         response = HTMLResponse(
@@ -598,6 +699,51 @@ async def update_config_api(
         return response
 
     return {"status": "saved"}
+
+
+@api_router.post("/chat")
+async def chat_endpoint(
+    request: Request,
+    body: ChatRequest,
+    store: DatabaseStore = Depends(get_store),
+    config: AppConfig = Depends(get_config),
+):
+    """Send a message to the classification chat assistant.
+
+    The frontend maintains message history client-side and sends the full
+    conversation on each request. The backend is stateless.
+
+    Returns the assistant's reply and a list of any actions taken (tool calls).
+    """
+    from assistant.chat.assistant import ChatAssistant
+
+    anthropic_client = request.app.state.anthropic_client
+    if not anthropic_client:
+        raise HTTPException(status_code=503, detail="Anthropic client not available")
+
+    folder_manager = request.app.state.folder_manager
+    message_manager = request.app.state.message_manager
+
+    assistant = ChatAssistant(
+        anthropic_client=anthropic_client,
+        store=store,
+        config=config,
+    )
+
+    result = await assistant.chat(
+        suggestion_id=body.suggestion_id,
+        user_messages=body.messages,
+        folder_manager=folder_manager,
+        message_manager=message_manager,
+    )
+
+    if result.error:
+        raise HTTPException(status_code=422, detail=result.error)
+
+    return {
+        "reply": result.reply,
+        "actions_taken": result.actions_taken,
+    }
 
 
 @api_router.get("/health")

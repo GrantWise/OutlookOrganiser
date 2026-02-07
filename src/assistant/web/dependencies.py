@@ -19,6 +19,8 @@ from typing import TYPE_CHECKING
 from fastapi import Request
 
 if TYPE_CHECKING:
+    import anthropic
+
     from assistant.config_schema import AppConfig
     from assistant.db.store import DatabaseStore
     from assistant.engine.triage import TriageEngine
@@ -49,3 +51,8 @@ def get_folder_manager(request: Request) -> FolderManager:
 def get_triage_engine(request: Request) -> TriageEngine:
     """Get the TriageEngine from app state."""
     return request.app.state.triage_engine
+
+
+def get_anthropic_client(request: Request) -> anthropic.Anthropic:
+    """Get the Anthropic client from app state."""
+    return request.app.state.anthropic_client

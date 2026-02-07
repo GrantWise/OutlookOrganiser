@@ -109,6 +109,10 @@ class ModelsConfig(BaseModel):
         default="claude-haiku-4-5-20251001",
         description="Model for waiting-for extraction",
     )
+    chat: str = Field(
+        default="claude-sonnet-4-5-20250929",
+        description="Model for classification chat assistant",
+    )
 
 
 class SnippetConfig(BaseModel):

@@ -734,3 +734,93 @@ class TriageEngine:
             self._consecutive_failures = 0
             self._degraded_mode = False
 
+    # ------------------------------------------------------------------
+    # Backlog triage (classify DB emails and create suggestions)
+    # ------------------------------------------------------------------
+
+    async def run_backlog_cycle(self, days: int) -> TriageCycleResult:
+        """Classify emails already in the database and create suggestions.
+
+        Unlike run_cycle() which fetches live from Graph API, this loads
+        emails from the local database (populated by bootstrap) and runs
+        them through the classification pipeline. Emails that already have
+        suggestions are skipped.
+
+        Args:
+            days: Number of days to look back in the database
+
+        Returns:
+            TriageCycleResult with processing statistics
+        """
+        cycle_id = str(uuid.uuid4())
+        set_correlation_id(cycle_id)
+        start = time.monotonic()
+
+        logger.info(
+            "backlog_cycle_start",
+            cycle_id=cycle_id,
+            days=days,
+        )
+
+        # Load emails from database
+        emails = await self._store.get_emails_by_date_range(days, limit=10000)
+
+        result = TriageCycleResult(cycle_id=cycle_id, emails_fetched=len(emails))
+        claude_attempted = 0
+        claude_failed = 0
+
+        for email in emails:
+            # Skip if already has a suggestion
+            try:
+                if await self._store.has_suggestion(email.id):
+                    result.skipped += 1
+                    continue
+            except DatabaseError as e:
+                logger.warning("has_suggestion_check_failed", email_id=email.id[:20], error=str(e))
+                result.skipped += 1
+                continue
+
+            result.emails_processed += 1
+
+            # Check auto-rules first
+            auto_result = self._classifier.classify_with_auto_rules(
+                sender_email=email.sender_email or "",
+                subject=email.subject or "",
+            )
+            if auto_result:
+                proc = await self._handle_auto_rule(email, auto_result)
+                if proc.method == "auto_rule":
+                    result.auto_ruled += 1
+                else:
+                    result.failed += 1
+                continue
+
+            # Full classification pipeline (thread inheritance + Claude)
+            claude_attempted += 1
+            proc = await self._classify_and_store(email, cycle_id)
+
+            if proc.method == "failed":
+                claude_failed += 1
+                result.failed += 1
+            elif proc.method == "claude_inherited":
+                result.inherited += 1
+            else:
+                result.classified += 1
+
+        elapsed = int((time.monotonic() - start) * 1000)
+        result.duration_ms = elapsed
+
+        logger.info(
+            "backlog_cycle_complete",
+            cycle_id=cycle_id,
+            duration_ms=elapsed,
+            emails_fetched=result.emails_fetched,
+            emails_processed=result.emails_processed,
+            auto_ruled=result.auto_ruled,
+            classified=result.classified,
+            inherited=result.inherited,
+            skipped=result.skipped,
+            failed=result.failed,
+        )
+
+        return result
