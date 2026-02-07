@@ -20,15 +20,12 @@ import functools
 import threading
 import time
 from collections.abc import Callable
-from typing import Any, TypeVar, cast
+from typing import Any, cast
 
 from assistant.core.errors import RateLimitExceeded
 from assistant.core.logging import get_logger
 
 logger = get_logger(__name__)
-
-# Type variables for better type hinting
-F = TypeVar("F", bound=Callable[..., Any])
 
 
 class TokenBucket:
@@ -131,6 +128,70 @@ class TokenBucket:
             self.tokens -= tokens
             return True
 
+    def consume_sync(self, tokens: int = 1) -> bool:
+        """Consume tokens synchronously, waiting if needed.
+
+        Thread-safe synchronous version of consume() for use in sync contexts
+        (e.g., GraphClient.request() running in a thread).
+
+        Args:
+            tokens: Number of tokens to consume
+
+        Returns:
+            True if tokens were consumed
+
+        Raises:
+            RateLimitExceeded: If tokens cannot be consumed even after waiting
+        """
+        if tokens > self.capacity:
+            logger.error(
+                "Attempted to consume more tokens than bucket capacity",
+                tokens=tokens,
+                capacity=self.capacity,
+            )
+            raise RateLimitExceeded(
+                f"Requested tokens ({tokens}) exceed bucket capacity ({self.capacity})"
+            )
+
+        with self.sync_lock:
+            self._refill()
+            if self.tokens >= tokens:
+                self.tokens -= tokens
+                return True
+
+            # Need to wait — calculate wait time inside lock
+            required_tokens = tokens - self.tokens
+            wait_time = required_tokens / self.rate
+
+            if wait_time > 20:
+                logger.warning(
+                    "Rate limit would require excessive wait",
+                    wait_time=wait_time,
+                    tokens_needed=required_tokens,
+                )
+                raise RateLimitExceeded(f"Rate limit exceeded, would require {wait_time:.2f}s wait")
+
+        # Release lock during sleep
+        logger.debug(
+            "Waiting for token bucket refill (sync)",
+            wait_time=wait_time,
+            tokens_needed=required_tokens,
+        )
+        time.sleep(wait_time)
+
+        # Reacquire lock for final consume
+        with self.sync_lock:
+            self._refill()
+            if self.tokens < tokens:
+                logger.error(
+                    "Failed to get enough tokens even after waiting",
+                    tokens=self.tokens,
+                    required=tokens,
+                )
+                raise RateLimitExceeded("Failed to get enough tokens even after waiting")
+            self.tokens -= tokens
+            return True
+
     def _refill(self) -> None:
         """Refill tokens based on elapsed time."""
         now = time.time()
@@ -168,7 +229,7 @@ def rate_limit(
     capacity: int = 1,
     max_calls: int | None = None,
     time_window: int | None = None,
-) -> Callable[[F], F]:
+) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator to apply rate limiting to a function.
 
     This decorator can be used on both async and sync functions.
@@ -201,7 +262,7 @@ def rate_limit(
         actual_rate = max_calls / time_window
         actual_capacity = max_calls
 
-    def decorator(func: F) -> F:
+    def decorator[F: Callable[..., Any]](func: F) -> F:
         @functools.wraps(func)
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
             bucket = get_bucket(bucket_name, actual_rate, actual_capacity)
@@ -220,54 +281,9 @@ def rate_limit(
 
         @functools.wraps(func)
         def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
-            # For synchronous functions, handle rate limiting synchronously
             bucket = get_bucket(bucket_name, actual_rate, actual_capacity)
-            wait_time = 0.0
-            required_tokens = 0.0
-
             try:
-                with bucket.sync_lock:
-                    # Check if we can consume tokens
-                    bucket._refill()
-                    if bucket.tokens >= tokens:
-                        bucket.tokens -= tokens
-                        # Tokens consumed, can proceed directly
-                        return func(*args, **kwargs)
-
-                    # Need to wait - calculate wait time inside lock
-                    required_tokens = tokens - bucket.tokens
-                    wait_time = required_tokens / bucket.rate
-
-                    if wait_time > 20:
-                        logger.warning(
-                            "Rate limit would require excessive wait",
-                            wait_time=wait_time,
-                            tokens_needed=required_tokens,
-                        )
-                        raise RateLimitExceeded(
-                            f"Rate limit exceeded, would require {wait_time:.2f}s wait"
-                        )
-
-                # Release lock during sleep
-                logger.debug(
-                    "Waiting for token bucket refill (sync)",
-                    wait_time=wait_time,
-                    tokens_needed=required_tokens,
-                )
-                time.sleep(wait_time)
-
-                # Reacquire lock for final consume
-                with bucket.sync_lock:
-                    bucket._refill()
-                    if bucket.tokens < tokens:
-                        logger.error(
-                            "Failed to get enough tokens even after waiting",
-                            tokens=bucket.tokens,
-                            required=tokens,
-                        )
-                        raise RateLimitExceeded("Failed to get enough tokens even after waiting")
-                    bucket.tokens -= tokens
-
+                bucket.consume_sync(tokens)
                 return func(*args, **kwargs)
             except Exception as e:
                 logger.error(

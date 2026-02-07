@@ -1343,16 +1343,23 @@ class DatabaseStore:
             logger.error("Failed to get sender profile", email=email, error=str(e))
             raise DatabaseError(f"Failed to get sender profile: {e}") from e
 
-    async def get_sender_history(self, sender_email: str) -> SenderHistory:
+    async def get_sender_history(
+        self,
+        sender_email: str,
+        since_days: int = 180,
+    ) -> SenderHistory:
         """Get sender history with folder distribution.
 
         Args:
             sender_email: Sender email address
+            since_days: Only consider emails from the last N days (default 180)
 
         Returns:
             SenderHistory with folder distribution
         """
         try:
+            cutoff = (datetime.now() - timedelta(days=since_days)).isoformat()
+
             async with self._db() as db:
                 # Get total count and folder distribution from approved suggestions
                 cursor = await db.execute(
@@ -1363,9 +1370,10 @@ class DatabaseStore:
                     WHERE e.sender_email = ?
                     AND s.status IN ('approved', 'partial')
                     AND s.approved_folder IS NOT NULL
+                    AND (e.received_at >= ? OR e.received_at IS NULL)
                     GROUP BY s.approved_folder
                     """,
-                    (sender_email.lower(),),
+                    (sender_email.lower(), cutoff),
                 )
                 rows = await cursor.fetchall()
 

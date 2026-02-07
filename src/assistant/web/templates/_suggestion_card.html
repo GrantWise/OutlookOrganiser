@@ -1,0 +1,133 @@
+{# Partial template for a single suggestion card.
+   Context: item = {"suggestion": Suggestion, "email": Email}
+            folder_options = list of folder paths
+#}
+{% set s = item.suggestion %}
+{% set email = item.email %}
+
+<div class="suggestion-card" id="suggestion-{{ s.id }}">
+    <!-- Header: subject + time -->
+    <div class="suggestion-header">
+        <span class="suggestion-subject">{{ email.subject if email else "Unknown Subject" }}</span>
+        <span class="suggestion-meta">{{ s.created_at | time_ago }}</span>
+    </div>
+
+    <!-- Sender info -->
+    <div class="suggestion-meta">
+        {% if email %}
+            {{ email.sender_name or "" }}
+            {% if email.sender_email %}&lt;{{ email.sender_email }}&gt;{% endif %}
+        {% endif %}
+    </div>
+
+    <!-- Snippet -->
+    {% if email and email.snippet %}
+    <div class="suggestion-snippet">{{ email.snippet[:200] }}</div>
+    {% if email.snippet | length > 200 %}
+    <button class="expand-toggle reasoning-toggle" type="button">Show more</button>
+    {% endif %}
+    {% endif %}
+
+    <!-- Classification row -->
+    <div class="classification-row">
+        {% if s.suggested_folder %}
+        <span class="badge badge-folder">{{ s.suggested_folder }}</span>
+        {% endif %}
+        {% if s.suggested_priority %}
+        <span class="badge {{ s.suggested_priority | priority_class }}">{{ s.suggested_priority }}</span>
+        {% endif %}
+        {% if s.suggested_action_type %}
+        <span class="badge badge-action">{{ s.suggested_action_type }}</span>
+        {% endif %}
+    </div>
+
+    <!-- Confidence bar -->
+    {% if s.confidence is not none %}
+    <div class="confidence-bar {{ s.confidence | confidence_class }}">
+        <div class="confidence-track">
+            <div class="confidence-fill" style="width: {{ (s.confidence * 100) | int }}%"></div>
+        </div>
+        <span class="confidence-value">{{ (s.confidence * 100) | int }}%</span>
+    </div>
+    {% endif %}
+
+    <!-- Reasoning -->
+    {% if s.reasoning %}
+    <div>
+        <button class="reasoning-toggle" type="button">Show reasoning</button>
+        <div class="reasoning" style="display: none;">{{ s.reasoning }}</div>
+    </div>
+    {% endif %}
+
+    <!-- Action buttons -->
+    <div class="action-row">
+        <button class="btn btn-approve"
+                hx-post="/api/suggestions/{{ s.id }}/approve"
+                hx-target="#suggestion-{{ s.id }}"
+                hx-swap="outerHTML swap:0.3s">
+            Approve
+        </button>
+        <button class="btn btn-correct" type="button">
+            Correct
+        </button>
+        <button class="btn btn-reject"
+                hx-post="/api/suggestions/{{ s.id }}/reject"
+                hx-target="#suggestion-{{ s.id }}"
+                hx-swap="outerHTML swap:0.3s">
+            Reject
+        </button>
+        {% if email and email.web_link %}
+        <a class="btn btn-link" href="{{ email.web_link }}" target="_blank" rel="noopener">
+            Open in Outlook
+        </a>
+        {% endif %}
+    </div>
+
+    <!-- Correction form (hidden by default) -->
+    <div class="correct-form">
+        <div class="form-row">
+            <div>
+                <label for="folder-{{ s.id }}">Folder</label>
+                <select id="folder-{{ s.id }}" name="folder">
+                    <option value="">-- Keep suggested --</option>
+                    {% for f in folder_options %}
+                    <option value="{{ f }}" {% if f == s.suggested_folder %}selected{% endif %}>{{ f }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div>
+                <label for="priority-{{ s.id }}">Priority</label>
+                <select id="priority-{{ s.id }}" name="priority">
+                    <option value="">-- Keep suggested --</option>
+                    <option value="P1 - Urgent" {% if s.suggested_priority == "P1 - Urgent" %}selected{% endif %}>P1 - Urgent</option>
+                    <option value="P2 - Important" {% if s.suggested_priority == "P2 - Important" %}selected{% endif %}>P2 - Important</option>
+                    <option value="P3 - Normal" {% if s.suggested_priority == "P3 - Normal" %}selected{% endif %}>P3 - Normal</option>
+                    <option value="P4 - Low" {% if s.suggested_priority == "P4 - Low" %}selected{% endif %}>P4 - Low</option>
+                </select>
+            </div>
+            <div>
+                <label for="action-{{ s.id }}">Action Type</label>
+                <select id="action-{{ s.id }}" name="action_type">
+                    <option value="">-- Keep suggested --</option>
+                    <option value="Needs Reply">Needs Reply</option>
+                    <option value="Review">Review</option>
+                    <option value="FYI Only">FYI Only</option>
+                    <option value="Waiting For">Waiting For</option>
+                    <option value="Delegate">Delegate</option>
+                </select>
+            </div>
+        </div>
+        <button class="btn btn-primary btn-sm"
+                hx-post="/api/suggestions/{{ s.id }}/approve"
+                hx-target="#suggestion-{{ s.id }}"
+                hx-swap="outerHTML swap:0.3s"
+                hx-include="[id^='folder-{{ s.id }}'],[id^='priority-{{ s.id }}'],[id^='action-{{ s.id }}']"
+                hx-vals='js:{
+                    "folder": document.getElementById("folder-{{ s.id }}").value || null,
+                    "priority": document.getElementById("priority-{{ s.id }}").value || null,
+                    "action_type": document.getElementById("action-{{ s.id }}").value || null
+                }'>
+            Apply Corrections
+        </button>
+    </div>
+</div>

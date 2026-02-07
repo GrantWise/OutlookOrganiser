@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Review Queue - Outlook AI Assistant{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>Review Queue</h2>
+    <p>{{ items | length }} pending suggestion{{ "s" if items | length != 1 else "" }}</p>
+</div>
+
+{% if items %}
+<!-- Bulk approve button -->
+<button class="btn btn-primary btn-bulk"
+        hx-post="/api/suggestions/bulk-approve"
+        hx-target="body"
+        hx-swap="none"
+        hx-confirm="Approve all suggestions with confidence >= 85%?"
+        hx-vals='{"min_confidence": 0.85}'>
+    Approve All High-Confidence
+</button>
+
+<!-- Suggestion cards -->
+<div id="suggestion-list">
+    {% for item in items %}
+        {% include "_suggestion_card.html" %}
+    {% endfor %}
+</div>
+
+{% else %}
+<div class="empty-state">
+    <p>No pending suggestions. The triage engine will add new suggestions as emails arrive.</p>
+</div>
+{% endif %}
+
+{% if failed_emails %}
+<!-- Failed classifications section -->
+<div style="margin-top: var(--space-xl);">
+    <h3 style="margin-bottom: var(--space-md);">Failed Classifications</h3>
+    <div class="card" style="padding: var(--space-lg);">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Subject</th>
+                    <th>Sender</th>
+                    <th>Received</th>
+                    <th>Attempts</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for email in failed_emails %}
+                <tr>
+                    <td>{{ email.subject or "No subject" }}</td>
+                    <td>{{ email.sender_email or "Unknown" }}</td>
+                    <td>{{ email.received_at | time_ago if email.received_at else "Unknown" }}</td>
+                    <td>{{ email.classification_attempts }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+{% endblock %}

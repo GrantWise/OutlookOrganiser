@@ -4,7 +4,7 @@ This package provides the core processing engines:
 - Thread context utilities for classification support
 - Bootstrap scanner for initial taxonomy discovery
 - Dry-run engine for testing classification
-- (Future) Triage engine for scheduled email classification
+- Triage engine for scheduled email classification
 """
 
 from assistant.engine.bootstrap import BootstrapEngine, BootstrapStats
@@ -19,6 +19,7 @@ from assistant.engine.thread_utils import (
     extract_domain,
     normalize_subject,
 )
+from assistant.engine.triage import TriageCycleResult, TriageEngine
 
 __all__ = [
     # Bootstrap
@@ -27,6 +28,9 @@ __all__ = [
     # Dry-run
     "DryRunEngine",
     "DryRunReport",
+    # Triage
+    "TriageCycleResult",
+    "TriageEngine",
     # Thread utilities
     "InheritanceResult",
     "SenderHistoryResult",

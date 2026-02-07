@@ -289,46 +289,10 @@ class GraphClient:
     def _consume_rate_limit_token(self) -> None:
         """Consume a rate limit token before making a request.
 
-        Uses the token bucket algorithm to proactively rate limit requests
-        to Microsoft Graph API, preventing 429 responses.
-
-        This uses synchronous consumption with the rate limiter's sync_lock.
+        Delegates to TokenBucket.consume_sync() to proactively rate limit
+        requests to Microsoft Graph API, preventing 429 responses.
         """
-        bucket = self._rate_bucket
-        tokens = 1
-
-        with bucket.sync_lock:
-            bucket._refill()
-            if bucket.tokens >= tokens:
-                bucket.tokens -= tokens
-                return
-
-            # Need to wait for tokens
-            required_tokens = tokens - bucket.tokens
-            wait_time = required_tokens / bucket.rate
-
-            if wait_time > 20:  # Same limit as rate_limiter.py
-                logger.warning(
-                    "Rate limit would require excessive wait",
-                    wait_time=wait_time,
-                    tokens_needed=required_tokens,
-                )
-                raise RateLimitExceeded(f"Rate limit exceeded, would require {wait_time:.2f}s wait")
-
-        # Release lock during sleep
-        logger.debug(
-            "Rate limiting: waiting for token",
-            wait_time=wait_time,
-            tokens_needed=required_tokens,
-        )
-        time.sleep(wait_time)
-
-        # Reacquire lock for final consume
-        with bucket.sync_lock:
-            bucket._refill()
-            if bucket.tokens < tokens:
-                raise RateLimitExceeded("Failed to get rate limit token after waiting")
-            bucket.tokens -= tokens
+        self._rate_bucket.consume_sync()
 
     def request(
         self,

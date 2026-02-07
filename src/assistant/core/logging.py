@@ -116,8 +116,3 @@ def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
         logger.info("operation_complete", duration_ms=42, records=100)
     """
     return structlog.get_logger(name)
-
-
-# Configure logging on module import with defaults
-# This can be reconfigured later by calling configure_logging() explicitly
-configure_logging()

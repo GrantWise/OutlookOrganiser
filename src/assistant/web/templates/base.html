@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Outlook AI Assistant{% endblock %}</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="/static/htmx.min.js"></script>
+</head>
+<body>
+    <div class="app-layout">
+        <!-- Sidebar navigation -->
+        <nav class="sidebar">
+            <div class="sidebar-brand">
+                <h1>Outlook AI</h1>
+                <p>Email Assistant</p>
+            </div>
+            <ul class="nav-list">
+                <li class="nav-item {% if nav_active == 'dashboard' %}active{% endif %}">
+                    <a href="/">Dashboard</a>
+                </li>
+                <li class="nav-item {% if nav_active == 'review' %}active{% endif %}">
+                    <a href="/review">
+                        Review Queue
+                        {% if pending_count is defined and pending_count %}
+                        <span class="nav-badge" id="pending-badge">{{ pending_count }}</span>
+                        {% endif %}
+                    </a>
+                </li>
+                <li class="nav-item {% if nav_active == 'waiting' %}active{% endif %}">
+                    <a href="/waiting">Waiting For</a>
+                </li>
+                <li class="nav-item {% if nav_active == 'config' %}active{% endif %}">
+                    <a href="/config">Config</a>
+                </li>
+                <li class="nav-item {% if nav_active == 'log' %}active{% endif %}">
+                    <a href="/log">Activity Log</a>
+                </li>
+            </ul>
+        </nav>
+
+        <!-- Main content area -->
+        <main class="main-content">
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+
+    <!-- Toast notification container -->
+    <div class="toast-container" id="toast-container"></div>
+
+    <script>
+        // Listen for HTMX showToast events
+        document.body.addEventListener("showToast", function(evt) {
+            var msg = evt.detail.value || evt.detail;
+            var container = document.getElementById("toast-container");
+            var toast = document.createElement("div");
+            toast.className = "toast";
+            toast.textContent = msg;
+            container.appendChild(toast);
+            setTimeout(function() { toast.remove(); }, 3000);
+        });
+
+        // Toggle snippet expansion
+        document.addEventListener("click", function(evt) {
+            if (evt.target.classList.contains("expand-toggle")) {
+                var snippet = evt.target.closest(".suggestion-card")
+                    .querySelector(".suggestion-snippet");
+                if (snippet) {
+                    snippet.classList.toggle("expanded");
+                    evt.target.textContent = snippet.classList.contains("expanded")
+                        ? "Show less" : "Show more";
+                }
+            }
+        });
+
+        // Toggle reasoning visibility
+        document.addEventListener("click", function(evt) {
+            if (evt.target.classList.contains("reasoning-toggle")) {
+                var reasoning = evt.target.nextElementSibling;
+                if (reasoning) {
+                    reasoning.style.display = reasoning.style.display === "none" ? "block" : "none";
+                    evt.target.textContent = reasoning.style.display === "none"
+                        ? "Show reasoning" : "Hide reasoning";
+                }
+            }
+        });
+
+        // Toggle correction form
+        document.addEventListener("click", function(evt) {
+            if (evt.target.classList.contains("btn-correct")) {
+                var card = evt.target.closest(".suggestion-card");
+                if (card) {
+                    var form = card.querySelector(".correct-form");
+                    if (form) {
+                        form.classList.toggle("active");
+                    }
+                }
+            }
+        });
+    </script>
+</body>
+</html>

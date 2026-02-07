@@ -113,7 +113,7 @@ class GraphAuth:
         logger.debug(
             "GraphAuth initialized",
             client_id=client_id[:8] + "...",  # Log partial ID for debugging
-            tenant_id=tenant_id,
+            tenant_id=tenant_id[:8] + "...",
             scopes=scopes,
         )
 
@@ -138,10 +138,7 @@ class GraphAuth:
                 account_count=len(accounts),
                 username=accounts[0].get("username", "unknown"),
             )
-            result = self.app.acquire_token_silent(
-                scopes=self.scopes,
-                account=accounts[0],
-            )
+            result = self._acquire_token_silent_with_retry(accounts[0])
             if result and "access_token" in result:
                 self._save_cache()
                 logger.debug("Token acquired silently (from cache/refresh)")
@@ -158,6 +155,46 @@ class GraphAuth:
         # 2. Fall back to device code flow
         logger.info("Initiating device code flow authentication")
         return self._device_code_flow()
+
+    def _acquire_token_silent_with_retry(self, account: dict) -> dict | None:
+        """Acquire token silently with retry logic for transient network errors.
+
+        Args:
+            account: MSAL account dict to acquire token for
+
+        Returns:
+            Token result dict from MSAL, or None if no cached token available
+        """
+        last_error: Exception | None = None
+
+        for attempt in range(MSAL_MAX_RETRIES):
+            try:
+                return self.app.acquire_token_silent(
+                    scopes=self.scopes,
+                    account=account,
+                )
+            except requests.exceptions.RequestException as e:
+                last_error = e
+                if attempt < MSAL_MAX_RETRIES - 1:
+                    delay = MSAL_RETRY_DELAYS[attempt]
+                    jitter = delay * 0.2 * (2 * random.random() - 1)
+                    actual_delay = delay + jitter
+                    logger.warning(
+                        "Silent token acquisition failed, retrying",
+                        attempt=attempt + 1,
+                        max_retries=MSAL_MAX_RETRIES,
+                        delay=actual_delay,
+                        error=str(e),
+                    )
+                    time.sleep(actual_delay)
+
+        logger.error(
+            "Silent token acquisition failed after retries",
+            max_retries=MSAL_MAX_RETRIES,
+            error=str(last_error),
+        )
+        # Return None to fall through to device code flow
+        return None
 
     def _device_code_flow(self) -> str:
         """Run the device code flow for interactive authentication.
@@ -399,7 +436,7 @@ class GraphAuth:
             try:
                 self.token_cache_path.unlink()
                 logger.info("Token cache cleared", path=str(self.token_cache_path))
-            except Exception as e:
+            except OSError as e:
                 logger.warning(
                     "Failed to delete token cache file",
                     path=str(self.token_cache_path),

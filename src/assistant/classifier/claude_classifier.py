@@ -53,6 +53,10 @@ logger = get_logger(__name__)
 MAX_CLASSIFICATION_ATTEMPTS = 3
 
 
+class _RetriableClassificationError(Exception):
+    """Internal: signals a logical failure that should be retried."""
+
+
 # ---------------------------------------------------------------------------
 # Classification result
 # ---------------------------------------------------------------------------
@@ -251,145 +255,32 @@ class EmailClassifier:
 
         # Attempt classification (app-level retry for logical failures)
         last_error: str | None = None
+        last_exception: BaseException | None = None
+
         for attempt in range(1, MAX_CLASSIFICATION_ATTEMPTS + 1):
-            start_time = time.monotonic()
-            api_response = None
-            tool_call_data: dict[str, Any] | None = None
-
             try:
-                # SDK handles transient retries (429, 5xx, connection errors)
-                api_response = self._client.messages.create(
-                    model=model_name,
-                    max_tokens=1024,
-                    system=self._system_prompt,
-                    messages=messages,
-                    tools=[CLASSIFY_EMAIL_TOOL],
-                    tool_choice={"type": "tool", "name": "classify_email"},
+                return await self._attempt_classification(
+                    model_name,
+                    messages,
+                    email_id,
+                    attempt,
+                    triage_cycle_id,
+                    context,
                 )
-
-                duration_ms = int((time.monotonic() - start_time) * 1000)
-
-                # Extract tool call from response
-                tool_call_data = _extract_tool_call(api_response)
-                if tool_call_data is None:
-                    last_error = "No tool call in response (unexpected with forced tool_choice)"
-                    logger.warning(
-                        "classification_no_tool_call",
-                        email_id=email_id,
-                        attempt=attempt,
-                    )
-                    await self._log_request(
-                        model=model_name,
-                        messages=messages,
-                        response=api_response,
-                        tool_call=None,
-                        duration_ms=duration_ms,
-                        email_id=email_id,
-                        triage_cycle_id=triage_cycle_id,
-                        error=last_error,
-                    )
-                    continue
-
-                # Validate the tool call fields
-                validation_error = _validate_tool_call(tool_call_data)
-                if validation_error:
-                    last_error = validation_error
-                    logger.warning(
-                        "classification_invalid_response",
-                        email_id=email_id,
-                        attempt=attempt,
-                        error=validation_error,
-                    )
-                    await self._log_request(
-                        model=model_name,
-                        messages=messages,
-                        response=api_response,
-                        tool_call=tool_call_data,
-                        duration_ms=duration_ms,
-                        email_id=email_id,
-                        triage_cycle_id=triage_cycle_id,
-                        error=validation_error,
-                    )
-                    continue
-
-                # Success - log and build result
-                await self._log_request(
-                    model=model_name,
-                    messages=messages,
-                    response=api_response,
-                    tool_call=tool_call_data,
-                    duration_ms=duration_ms,
-                    email_id=email_id,
-                    triage_cycle_id=triage_cycle_id,
-                )
-
-                return _build_result(tool_call_data, context)
-
+            except _RetriableClassificationError as e:
+                last_error = str(e)
+                continue
             except anthropic.RateLimitError as e:
-                duration_ms = int((time.monotonic() - start_time) * 1000)
                 last_error = f"Rate limited after SDK retries: {e}"
-                logger.error(
-                    "classification_rate_limited",
-                    email_id=email_id,
-                    attempt=attempt,
-                    error=str(e),
-                )
-                await self._log_request(
-                    model=model_name,
-                    messages=messages,
-                    response=None,
-                    tool_call=None,
-                    duration_ms=duration_ms,
-                    email_id=email_id,
-                    triage_cycle_id=triage_cycle_id,
-                    error=last_error,
-                )
-                # Don't retry rate limits at app level - SDK already retried
+                last_exception = e
                 break
-
             except anthropic.APIConnectionError as e:
-                duration_ms = int((time.monotonic() - start_time) * 1000)
                 last_error = f"API connection error after SDK retries: {e}"
-                logger.error(
-                    "classification_connection_error",
-                    email_id=email_id,
-                    attempt=attempt,
-                    error=str(e),
-                )
-                await self._log_request(
-                    model=model_name,
-                    messages=messages,
-                    response=None,
-                    tool_call=None,
-                    duration_ms=duration_ms,
-                    email_id=email_id,
-                    triage_cycle_id=triage_cycle_id,
-                    error=last_error,
-                )
-                # Don't retry connection errors at app level - SDK already retried
+                last_exception = e
                 break
-
             except anthropic.APIStatusError as e:
-                duration_ms = int((time.monotonic() - start_time) * 1000)
                 last_error = f"API status error {e.status_code}: {e.message}"
-                logger.error(
-                    "classification_api_error",
-                    email_id=email_id,
-                    attempt=attempt,
-                    status_code=e.status_code,
-                    error=str(e),
-                )
-                await self._log_request(
-                    model=model_name,
-                    messages=messages,
-                    response=None,
-                    tool_call=None,
-                    duration_ms=duration_ms,
-                    email_id=email_id,
-                    triage_cycle_id=triage_cycle_id,
-                    error=last_error,
-                )
-                # SDK retries 5xx; other status errors are not retryable
+                last_exception = e
                 break
 
         # All attempts exhausted or non-retryable error
@@ -398,7 +289,154 @@ class EmailClassifier:
             f"{MAX_CLASSIFICATION_ATTEMPTS} attempts. Last error: {last_error}",
             email_id=email_id,
             attempts=MAX_CLASSIFICATION_ATTEMPTS,
+        ) from last_exception
+
+    async def _attempt_classification(
+        self,
+        model_name: str,
+        messages: list[dict[str, Any]],
+        email_id: str,
+        attempt: int,
+        triage_cycle_id: str | None,
+        context: ClassificationContext,
+    ) -> ClassificationResult:
+        """Make a single classification API call, validate, and return the result.
+
+        Handles the API call, response extraction, validation, and request
+        logging for a single classification attempt.
+
+        Raises:
+            _RetriableClassificationError: On logical failures (no tool call,
+                invalid response) that should be retried.
+            anthropic.RateLimitError: SDK exhausted retries on 429.
+            anthropic.APIConnectionError: SDK exhausted connection retries.
+            anthropic.APIStatusError: Non-retryable API status error.
+        """
+        start_time = time.monotonic()
+
+        try:
+            api_response = self._client.messages.create(
+                model=model_name,
+                max_tokens=1024,
+                system=self._system_prompt,
+                messages=messages,
+                tools=[CLASSIFY_EMAIL_TOOL],
+                tool_choice={"type": "tool", "name": "classify_email"},
+            )
+        except anthropic.RateLimitError as e:
+            duration_ms = int((time.monotonic() - start_time) * 1000)
+            logger.error(
+                "classification_rate_limited",
+                email_id=email_id,
+                attempt=attempt,
+                error=str(e),
+            )
+            await self._log_request(
+                model=model_name,
+                messages=messages,
+                response=None,
+                tool_call=None,
+                duration_ms=duration_ms,
+                email_id=email_id,
+                triage_cycle_id=triage_cycle_id,
+                error=f"Rate limited after SDK retries: {e}",
+            )
+            raise
+        except anthropic.APIConnectionError as e:
+            duration_ms = int((time.monotonic() - start_time) * 1000)
+            logger.error(
+                "classification_connection_error",
+                email_id=email_id,
+                attempt=attempt,
+                error=str(e),
+            )
+            await self._log_request(
+                model=model_name,
+                messages=messages,
+                response=None,
+                tool_call=None,
+                duration_ms=duration_ms,
+                email_id=email_id,
+                triage_cycle_id=triage_cycle_id,
+                error=f"API connection error after SDK retries: {e}",
+            )
+            raise
+        except anthropic.APIStatusError as e:
+            duration_ms = int((time.monotonic() - start_time) * 1000)
+            logger.error(
+                "classification_api_error",
+                email_id=email_id,
+                attempt=attempt,
+                status_code=e.status_code,
+                error=str(e),
+            )
+            await self._log_request(
+                model=model_name,
+                messages=messages,
+                response=None,
+                tool_call=None,
+                duration_ms=duration_ms,
+                email_id=email_id,
+                triage_cycle_id=triage_cycle_id,
+                error=f"API status error {e.status_code}: {e.message}",
+            )
+            raise
+
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+
+        # Extract tool call from response
+        tool_call_data = _extract_tool_call(api_response)
+        if tool_call_data is None:
+            error = "No tool call in response (unexpected with forced tool_choice)"
+            logger.warning(
+                "classification_no_tool_call",
+                email_id=email_id,
+                attempt=attempt,
+            )
+            await self._log_request(
+                model=model_name,
+                messages=messages,
+                response=api_response,
+                tool_call=None,
+                duration_ms=duration_ms,
+                email_id=email_id,
+                triage_cycle_id=triage_cycle_id,
+                error=error,
+            )
+            raise _RetriableClassificationError(error)
+
+        # Validate the tool call fields
+        validation_error = _validate_tool_call(tool_call_data)
+        if validation_error:
+            logger.warning(
+                "classification_invalid_response",
+                email_id=email_id,
+                attempt=attempt,
+                error=validation_error,
+            )
+            await self._log_request(
+                model=model_name,
+                messages=messages,
+                response=api_response,
+                tool_call=tool_call_data,
+                duration_ms=duration_ms,
+                email_id=email_id,
+                triage_cycle_id=triage_cycle_id,
+                error=validation_error,
+            )
+            raise _RetriableClassificationError(validation_error)
+
+        # Success — log and build result
+        await self._log_request(
+            model=model_name,
+            messages=messages,
+            response=api_response,
+            tool_call=tool_call_data,
+            duration_ms=duration_ms,
+            email_id=email_id,
+            triage_cycle_id=triage_cycle_id,
         )
+        return _build_result(tool_call_data, context)
 
     async def _log_request(
         self,
@@ -512,7 +550,7 @@ def _validate_tool_call(data: dict[str, Any]) -> str | None:
 
     # Validate confidence range
     confidence = data.get("confidence")
-    if not isinstance(confidence, int | float) or confidence < 0.0 or confidence > 1.0:
+    if not isinstance(confidence, (int, float)) or confidence < 0.0 or confidence > 1.0:
         return f"Invalid confidence: {confidence}. Must be a number between 0.0 and 1.0"
 
     # Validate folder is not empty

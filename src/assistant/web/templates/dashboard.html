@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - Outlook AI Assistant{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>Dashboard</h2>
+    <p>System overview and health status</p>
+</div>
+
+<!-- Stats grid -->
+<div class="stat-grid">
+    <div class="stat-card">
+        <a href="/review">
+            <div class="stat-value">{{ stats.get("pending_suggestions", 0) }}</div>
+            <div class="stat-label">Pending Suggestions</div>
+        </a>
+    </div>
+    <div class="stat-card">
+        <a href="/review">
+            <div class="stat-value">{{ aging_needs_reply }}</div>
+            <div class="stat-label">Aging Needs Reply</div>
+        </a>
+    </div>
+    <div class="stat-card">
+        <a href="/waiting">
+            <div class="stat-value">{{ overdue_waiting }}</div>
+            <div class="stat-label">Overdue Waiting For</div>
+        </a>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">{{ stats.get("failed_classifications", 0) }}</div>
+        <div class="stat-label">Failed Classifications</div>
+    </div>
+    <div class="stat-card">
+        <a href="/log">
+            <div class="stat-value">{{ stats.get("actions_last_24h", 0) }}</div>
+            <div class="stat-label">Actions (24h)</div>
+        </a>
+    </div>
+    <div class="stat-card">
+        <div class="stat-value">{{ stats.get("total_emails", 0) }}</div>
+        <div class="stat-label">Total Emails Tracked</div>
+    </div>
+</div>
+
+<!-- Health section -->
+<div class="card health-section" style="padding: var(--space-lg);">
+    <h3 style="margin-bottom: var(--space-md);">System Health</h3>
+
+    <div class="health-row">
+        <span class="status-dot {% if degraded_mode %}degraded{% elif last_cycle %}healthy{% else %}offline{% endif %}"></span>
+        <strong>Triage Engine:</strong>
+        {% if degraded_mode %}
+            Degraded Mode (auto-rules only)
+        {% elif last_cycle %}
+            Running
+        {% else %}
+            Not started
+        {% endif %}
+    </div>
+
+    <div class="health-row">
+        <span>Last cycle:</span>
+        {% if last_cycle %}
+            <span>{{ last_cycle_ago }}</span>
+        {% else %}
+            <span class="text-muted">No cycles run yet</span>
+        {% endif %}
+    </div>
+
+    <div class="health-row">
+        <span>Triage interval:</span>
+        <span>Every {{ interval_minutes }} minutes</span>
+    </div>
+
+    {% if degraded_mode %}
+    <div class="error-message" style="margin-top: var(--space-md);">
+        The triage engine is in degraded mode due to consecutive classification failures.
+        Only auto-rules are being applied. Claude classification will resume automatically
+        when the service recovers.
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

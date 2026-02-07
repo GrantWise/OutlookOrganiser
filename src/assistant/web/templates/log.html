@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Activity Log - Outlook AI Assistant{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>Activity Log</h2>
+    <p>Recent actions and system events</p>
+</div>
+
+<!-- Filters -->
+<div class="log-filters">
+    <select onchange="window.location.href = this.value ? '/log?action_type=' + this.value : '/log'">
+        <option value="" {% if not current_action_type %}selected{% endif %}>All actions</option>
+        <option value="move" {% if current_action_type == "move" %}selected{% endif %}>Move</option>
+        <option value="reject" {% if current_action_type == "reject" %}selected{% endif %}>Reject</option>
+        <option value="classify" {% if current_action_type == "classify" %}selected{% endif %}>Classify</option>
+        <option value="suggest" {% if current_action_type == "suggest" %}selected{% endif %}>Suggest</option>
+        <option value="auto_rule" {% if current_action_type == "auto_rule" %}selected{% endif %}>Auto Rule</option>
+    </select>
+</div>
+
+{% if items %}
+<div class="card" style="padding: var(--space-lg);">
+    {% for item in items %}
+    {% set log = item.log %}
+    <div class="log-entry">
+        <span class="log-timestamp">{{ log.timestamp.strftime("%Y-%m-%d %H:%M") if log.timestamp else "Unknown" }}</span>
+        <span class="log-action badge
+            {% if log.action_type == 'move' %}badge-folder
+            {% elif log.action_type == 'reject' %}priority-p1
+            {% elif log.action_type == 'classify' %}priority-p3
+            {% elif log.action_type == 'suggest' %}priority-p2
+            {% else %}badge-action
+            {% endif %}">
+            {{ log.action_type }}
+        </span>
+        <span class="log-subject">{{ item.email_subject or "-" }}</span>
+        <span class="log-trigger">{{ log.triggered_by or "" }}</span>
+    </div>
+    {% endfor %}
+</div>
+
+{% else %}
+<div class="empty-state">
+    <p>No activity logged yet.</p>
+</div>
+{% endif %}
+{% endblock %}

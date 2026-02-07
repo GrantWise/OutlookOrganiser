@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Waiting For - Outlook AI Assistant{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>Waiting For</h2>
+    <p>Track items you're waiting on from others</p>
+</div>
+
+{% if items %}
+<div class="card" style="padding: var(--space-lg);">
+    <table class="data-table">
+        <thead>
+            <tr>
+                <th>Subject</th>
+                <th>Waiting On</th>
+                <th>Description</th>
+                <th>Age</th>
+                <th>Action</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in items %}
+            {% set w = item.waiting %}
+            {% set email = item.email %}
+            <tr id="waiting-{{ w.id }}">
+                <td>
+                    {% if email %}
+                        {% if email.web_link %}
+                        <a href="{{ email.web_link }}" target="_blank" rel="noopener">{{ email.subject or "No subject" }}</a>
+                        {% else %}
+                        {{ email.subject or "No subject" }}
+                        {% endif %}
+                    {% else %}
+                    <span style="color: var(--color-text-muted);">Unknown email</span>
+                    {% endif %}
+                </td>
+                <td>{{ w.expected_from or "Unknown" }}</td>
+                <td>{{ w.description or "-" }}</td>
+                <td>
+                    <span class="{{ item.age_class }}">{{ item.age_hours }}h</span>
+                </td>
+                <td>
+                    <button class="btn btn-sm btn-primary"
+                            hx-post="/api/waiting/{{ w.id }}/resolve"
+                            hx-target="#waiting-{{ w.id }}"
+                            hx-swap="outerHTML swap:0.3s"
+                            hx-confirm="Mark this item as resolved?">
+                        Resolve
+                    </button>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+{% else %}
+<div class="empty-state">
+    <p>No active waiting-for items.</p>
+</div>
+{% endif %}
+{% endblock %}

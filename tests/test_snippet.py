@@ -7,7 +7,6 @@ to improve classification accuracy.
 import pytest
 
 from assistant.classifier.snippet import (
-    CleaningResult,
     SnippetCleaner,
     clean_snippet,
 )

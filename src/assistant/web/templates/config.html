@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Config - Outlook AI Assistant{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>Configuration</h2>
+    <p>Edit config.yaml - changes are validated before saving</p>
+</div>
+
+<div class="card" style="padding: var(--space-lg);">
+    <form hx-post="/api/config"
+          hx-target="#validation-errors"
+          hx-swap="innerHTML">
+        <textarea class="config-editor"
+                  name="yaml_content"
+                  spellcheck="false">{{ yaml_content }}</textarea>
+
+        <div style="margin-top: var(--space-md); display: flex; gap: var(--space-sm); align-items: center;">
+            <button class="btn btn-primary" type="submit">Save Configuration</button>
+            <span style="font-size: 12px; color: var(--color-text-muted);">
+                Config is validated against the schema before saving.
+            </span>
+        </div>
+
+        <div id="validation-errors"></div>
+    </form>
+</div>
+{% endblock %}

@@ -6,7 +6,7 @@ Tests thread inheritance, context fetching, and sender history lookup.
 from __future__ import annotations
 
 import base64
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
@@ -15,18 +15,14 @@ import pytest
 from assistant.engine.thread_utils import (
     InheritanceResult,
     SenderHistoryResult,
-    ThreadContext,
     ThreadContextManager,
-    ThreadMessage,
     calculate_thread_depth,
     extract_domain,
     normalize_subject,
 )
 
 if TYPE_CHECKING:
-    from assistant.classifier.snippet import SnippetCleaner
-    from assistant.db.store import DatabaseStore, Email, SenderHistory
-    from assistant.graph.messages import MessageManager
+    pass
 
 
 # =============================================================================
@@ -62,7 +58,9 @@ def mock_message_manager() -> MagicMock:
 def mock_snippet_cleaner() -> MagicMock:
     """Create a mock SnippetCleaner."""
     cleaner = MagicMock()
-    cleaner.clean_for_context = MagicMock(side_effect=lambda text, is_html=False: text[:500] if text else "")
+    cleaner.clean_for_context = MagicMock(
+        side_effect=lambda text, is_html=False: text[:500] if text else ""
+    )
     return cleaner
 
 
@@ -559,7 +557,7 @@ class TestGetThreadContext:
             ),
         ]
 
-        context = await thread_manager.get_thread_context(
+        await thread_manager.get_thread_context(
             conversation_id="conv123",
             exclude_message_id="msg1",  # Exclude the only message
         )

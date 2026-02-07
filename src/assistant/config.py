@@ -15,6 +15,7 @@ Usage:
 """
 
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,7 @@ logger = get_logger(__name__)
 DEFAULT_CONFIG_PATH = Path("config/config.yaml")
 
 # Global state for config singleton and hot-reload
+_config_lock = threading.Lock()
 _current_config: AppConfig | None = None
 _config_path: Path | None = None
 _config_mtime: float = 0.0
@@ -181,6 +183,9 @@ def get_config() -> AppConfig:
     On first call, loads configuration from disk. Subsequent calls return
     the cached config. Use reload_config_if_changed() to check for updates.
 
+    Thread-safe: protected by _config_lock for concurrent access from
+    APScheduler triage thread and uvicorn async thread.
+
     Returns:
         Current AppConfig instance
 
@@ -190,12 +195,13 @@ def get_config() -> AppConfig:
     """
     global _current_config, _config_path, _config_mtime
 
-    if _current_config is None:
-        _config_path = _get_config_path()
-        _current_config = load_config(_config_path)
-        _config_mtime = _config_path.stat().st_mtime
+    with _config_lock:
+        if _current_config is None:
+            _config_path = _get_config_path()
+            _current_config = load_config(_config_path)
+            _config_mtime = _config_path.stat().st_mtime
 
-    return _current_config
+        return _current_config
 
 
 def reload_config_if_changed() -> bool:
@@ -203,6 +209,9 @@ def reload_config_if_changed() -> bool:
 
     Call this at the start of each triage cycle to pick up config changes
     without requiring a restart.
+
+    Thread-safe: protected by _config_lock for concurrent access from
+    APScheduler triage thread and uvicorn async thread.
 
     Returns:
         True if config was reloaded, False if unchanged
@@ -214,52 +223,53 @@ def reload_config_if_changed() -> bool:
     """
     global _current_config, _config_path, _config_mtime
 
-    if _config_path is None:
-        # Config hasn't been loaded yet, nothing to reload
-        return False
+    with _config_lock:
+        if _config_path is None:
+            # Config hasn't been loaded yet, nothing to reload
+            return False
 
-    try:
-        current_mtime = _config_path.stat().st_mtime
-    except OSError as e:
-        logger.warning(
-            "Failed to check config file mtime",
-            path=str(_config_path),
-            error=str(e),
-        )
-        return False
+        try:
+            current_mtime = _config_path.stat().st_mtime
+        except OSError as e:
+            logger.warning(
+                "Failed to check config file mtime",
+                path=str(_config_path),
+                error=str(e),
+            )
+            return False
 
-    if current_mtime <= _config_mtime:
-        # File hasn't changed
-        return False
+        if current_mtime <= _config_mtime:
+            # File hasn't changed
+            return False
 
-    # File has changed, attempt reload
-    logger.info(
-        "Configuration file changed, attempting reload",
-        path=str(_config_path),
-    )
-
-    try:
-        new_config = load_config(_config_path)
-        _current_config = new_config
-        _config_mtime = current_mtime
-
+        # File has changed, attempt reload
         logger.info(
-            "Configuration reloaded successfully",
+            "Configuration file changed, attempting reload",
             path=str(_config_path),
-            schema_version=new_config.schema_version,
         )
-        return True
 
-    except (ConfigLoadError, ConfigValidationError) as e:
-        # Keep the old config, log the error
-        logger.warning(
-            "Configuration reload failed, keeping previous config",
-            path=str(_config_path),
-            error=str(e),
-        )
-        # Update mtime so we don't keep trying to reload on every check
-        _config_mtime = current_mtime
-        return False
+        try:
+            new_config = load_config(_config_path)
+            _current_config = new_config
+            _config_mtime = current_mtime
+
+            logger.info(
+                "Configuration reloaded successfully",
+                path=str(_config_path),
+                schema_version=new_config.schema_version,
+            )
+            return True
+
+        except (ConfigLoadError, ConfigValidationError) as e:
+            # Keep the old config, log the error
+            logger.warning(
+                "Configuration reload failed, keeping previous config",
+                path=str(_config_path),
+                error=str(e),
+            )
+            # Update mtime so we don't keep trying to reload on every check
+            _config_mtime = current_mtime
+            return False
 
 
 def validate_config_file(path: Path | None = None) -> tuple[bool, str]:
@@ -294,6 +304,7 @@ def validate_config_file(path: Path | None = None) -> tuple[bool, str]:
 def reset_config() -> None:
     """Reset the config singleton. Primarily for testing."""
     global _current_config, _config_path, _config_mtime
-    _current_config = None
-    _config_path = None
-    _config_mtime = 0.0
+    with _config_lock:
+        _current_config = None
+        _config_path = None
+        _config_mtime = 0.0
