@@ -4,158 +4,150 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-An AI-powered email management agent that connects to Microsoft Outlook via the Microsoft Graph API, uses Claude as its intelligence layer, and organizes email according to a hybrid PARA + GTD + Eisenhower methodology. Runs as a Docker-containerized Python 3.12+ service.
+AI-powered email management agent for Microsoft Outlook. Connects via Microsoft Graph API, uses Claude as its intelligence layer, organizes email using a hybrid PARA + GTD + Eisenhower methodology. Python 3.12+ service with SQLite database and FastAPI web UI.
+
+## Environment
+
+The project uses a local `.venv` virtual environment. **Always activate the venv** before running commands:
+
+```bash
+source .venv/bin/activate                        # Activate venv (must do first)
+```
+
+All commands below assume the venv is activated. Do NOT use `uv run` prefix — run commands directly within the activated venv.
 
 ## Build and Run Commands
 
 ```bash
-# Install uv (package manager)
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Install dependencies
-uv sync
-
-# Validate config file
-uv run python -m assistant validate-config
-
-# Bootstrap: scan existing mail, propose taxonomy
-uv run python -m assistant bootstrap --days 90
-
-# Test classification against existing mail (no changes)
-uv run python -m assistant dry-run --days 90 --sample 20
-
-# Start triage engine + web UI
-uv run python -m assistant serve
-
-# Run single triage cycle
-uv run python -m assistant triage --once
-
-# Generate digest
-uv run python -m assistant digest
-
-# Undo recent actions
-uv run python -m assistant undo --last 5
-
-# Audit auto-rules
-uv run python -m assistant rules --audit
-```
-
-### Docker
-
-```bash
-# Start the service
-docker compose up -d
-
-# Run bootstrap as one-off
-docker compose run --rm bootstrap --days 90
-
-# View logs
-docker logs outlook-assistant
+pip install -e ".[dev]"                          # Install dependencies (including dev)
+python -m assistant validate-config              # Validate config file
+python -m assistant bootstrap --days 90          # Scan existing mail, propose taxonomy
+python -m assistant dry-run --days 90 --sample 20  # Test classification (no changes)
+python -m assistant serve                        # Start triage engine + web UI
+python -m assistant triage --once                # Run single triage cycle
 ```
 
 ### Testing
 
 ```bash
-# Install dev dependencies
-uv sync --dev
-
-# Run all tests
-uv run pytest
-
-# Run specific test file
-uv run pytest tests/test_classifier.py
-
-# Run with coverage
-uv run pytest --cov=src/assistant
+pytest                                           # Run all tests
+pytest tests/test_classifier.py                  # Run specific test file
+pytest tests/test_classifier.py::TestAutoRules::test_sender_match  # Single test
+pytest --cov=src/assistant                       # With coverage
 ```
 
 ### Linting
 
 ```bash
-uv run ruff check src/ tests/
-uv run ruff format src/ tests/
+ruff check src/ tests/                           # Lint
+ruff format src/ tests/                          # Format
 ```
 
 ## Architecture
 
-```
-outlook-ai-assistant/
-├── src/assistant/
-│   ├── __main__.py         # CLI entry point
-│   ├── cli.py              # Click CLI commands
-│   ├── config.py           # Config loader + hot-reload
-│   ├── config_schema.py    # Pydantic models for config.yaml
-│   ├── auth/               # MSAL OAuth2 device code flow
-│   ├── graph/              # Microsoft Graph API client
-│   ├── classifier/         # Claude classification + auto-rules
-│   ├── engine/             # Bootstrap, triage, digest engines
-│   ├── db/                 # SQLite schema + operations
-│   └── web/                # FastAPI review UI
-├── config/config.yaml      # User config (gitignored)
-├── data/                   # SQLite DB + token cache (gitignored)
-└── tests/
-```
+### Data Flow
 
-### Key Components
-
-- **Bootstrap Scanner**: Two-pass analysis (Sonnet) - batch analyze emails, then consolidate into proposed taxonomy
-- **Triage Engine**: Scheduled polling (APScheduler), classifies new emails via Claude tool use (Haiku), stores suggestions
-- **Auto-Rules**: Pattern matching for high-confidence routing, skips Claude API
-- **Thread Inheritance**: Inherits folder from prior messages in same conversation, reduces API calls ~50-60%
-- **Review UI**: FastAPI + Jinja2 on localhost:8080
+1. Graph API fetch → email ETL pipeline
+2. Check auto-rules → if match, apply directly (no Claude call)
+3. Check thread inheritance → if prior classification exists in same conversation, inherit folder
+4. Otherwise → Claude classification via tool use
+5. Store suggestion → user reviews via web UI
+6. On approval → execute via Graph API (move/flag/categorize)
 
 ### Model Tiering
 
-| Task | Model | Rationale |
-|------|-------|-----------|
-| Bootstrap | Sonnet 4.5 | Complex pattern discovery, runs infrequently |
-| Triage | Haiku 4.5 | High-volume, repetitive classification |
-| Digest | Haiku 4.5 | Summarizing structured data |
+| Task | Model | Response Format |
+|------|-------|-----------------|
+| Bootstrap | Sonnet 4.5 | YAML (two-pass: batch analyze then consolidate) |
+| Triage | Haiku 4.5 | Tool use (forced `tool_choice` for structured output) |
+| Digest | Haiku 4.5 | Tool use |
 
-### Data Flow
+### Dependency Initialization
 
-1. Graph API fetch → Extract/Transform/Load pipeline
-2. Check auto-rules → if match, apply directly
-3. Check thread inheritance → if prior classification exists, inherit folder
-4. Otherwise → Claude classification via tool use
-5. Store suggestion → user reviews via web UI
-6. On approval → execute via Graph API
+`cli.py` uses a frozen `CLIDeps` dataclass to centralize all dependency creation. Each CLI command calls `_init_cli_deps()` which handles auth, Graph client, DB store, and classifier initialization with proper error handling. The web layer (`web/app.py`) uses FastAPI's lifespan context manager for the same initialization, storing deps on `app.state`.
+
+### Config System
+
+`config.py` implements a thread-safe singleton with hot-reload. `get_config()` returns the cached config; `reload_config_if_changed()` checks file mtime and reloads if changed (called each triage cycle). On reload failure, the old config is kept and a warning is logged.
+
+### Triage Engine + Web Server Bridge
+
+APScheduler runs in a background thread while FastAPI runs the async event loop. The scheduler bridges to async via `asyncio.run_coroutine_threadsafe()`. After 3 consecutive cycles of 100% Claude failure, the engine degrades to auto-rules-only mode.
+
+### Thread Inheritance
+
+`engine/thread_utils.py` - `ThreadContextManager` checks if prior messages in the same `conversation_id` already have a classification. If so, inherits the folder without calling Claude. Reduces API calls ~50-60%.
+
+## Code Conventions
+
+### Python Version & Type Hints
+
+- Target Python 3.12+. Use PEP 695 type parameters: `def func[F: Callable](x: F) -> F`
+- Import `Generator` from `collections.abc`, not `typing`
+- Use `TYPE_CHECKING` for forward reference imports
+
+### Async Patterns
+
+Everything downstream of the CLI/web entry points is async: database (aiosqlite), classifier, triage engine. Tests use `asyncio_mode = "auto"` (no `@pytest.mark.asyncio` needed).
+
+### Frozen Dataclasses for Results
+
+Immutable results use `@dataclass(frozen=True)`: `ClassificationResult`, `CLIDeps`, `ThreadMessage`, `AutoRuleMatch`, `CleanedSnippet`. This prevents accidental mutation after creation.
+
+### Exception Hierarchy
+
+`core/errors.py` defines specific exceptions inheriting from `AssistantError`:
+- `ConfigLoadError`, `ConfigValidationError` - config issues
+- `AuthenticationError` - MSAL failures
+- `GraphAPIError` (has `status_code`, `error_code`) - Graph API failures
+- `RateLimitExceeded` - token bucket wait would exceed 20s
+- `ConflictError` - 412 Precondition Failed (ETag mismatch)
+
+Always catch specific exceptions, add `from e` or `from None` when re-raising.
+
+### Structured Logging
+
+Uses structlog with JSON output. `core/logging.py` provides `get_logger(__name__)`. Each triage cycle sets a correlation ID via `set_correlation_id()` so all logs within a cycle are traceable.
+
+### Regex Safety
+
+**CRITICAL**: Never use `re` module. Always use `regex` library with `timeout=1.0` to prevent ReDoS:
+```python
+import regex
+result = regex.search(pattern, text, timeout=1.0)
+```
+
+### Graph API Patterns
+
+- Token bucket rate limiter at 10 req/sec (`core/rate_limiter.py`)
+- Optimistic concurrency with ETags: fetch with ETag, update with `If-Match` header
+- Handle 412 Precondition Failed with retry loop (MAX_CONFLICT_RETRIES = 3)
+- Idempotency checks before mutations (e.g., check if message already in destination folder)
+
+### Auto-Rules
+
+Auto-rules use `fnmatch` (glob-style) for sender matching and substring search for subjects. No regex in auto-rules - keeps them simple and safe.
+
+### Security
+
+- Server binds to `127.0.0.1` only
+- Token cache file permissions: mode 600
+- No full email bodies stored, only cleaned snippets (first 1000 chars)
+- Pydantic validators prevent path traversal in config paths
+
+### Ruff Configuration
+
+Line length 100, target py312. Enabled rule sets: E, W, F, I, B, C4, UP. `E501` ignored (formatter handles line length). FastAPI files (`web/routes.py`, `web/dependencies.py`) suppress B008 for `Depends()` defaults.
 
 ## Code Quality Standards
 
-### Toyota Principle - Five Pillars (ALL must be satisfied)
+Follow the Toyota Five Pillars (see `PRINCIPLES.md`) and Unix Philosophy. Key points:
+- **YAGNI**: Implement only what's currently needed
+- **Fail fast**: Specific errors with actionable messages (What failed? Where? Why? How to fix?)
+- **Observability**: Structured logging with context on every significant operation
+- **Proven patterns**: Standard Python/framework idioms, no custom architectures
 
-1. **Not Over-Engineered**: Implement only what's currently needed (YAGNI). Simplest solution wins.
-2. **Sophisticated Where Needed**: Add complexity ONLY for reliability, security, or performance.
-3. **Robust Error Handling**: Fail fast with specific errors and actionable messages.
-4. **Complete Observability**: Structured logging with context (structlog JSON).
-5. **Proven Patterns**: Follow standard Python/framework patterns.
-
-### Unix Philosophy
-
-- **Representation**: Store knowledge in data/config, not hardcoded logic
-- **Least Surprise**: Methods do what names suggest, consistent naming
-- **Modularity**: Single responsibility per class/module
-- **Separation**: Business rules in config, algorithms in code
-
-### Error Messages
-
-Every error message should answer: What failed? Where? Why? How to fix? Where to learn more?
-
-```python
-raise ValueError(
-    f"Invalid temperature {temp}°C in sensor_id={sensor_id}. "
-    f"Must be between -40°C and 85°C. "
-    f"Check sensor calibration. Docs: https://..."
-)
-```
-
-### Critical Security Requirements
-
-- **ALL regex patterns MUST have timeouts** (use `regex` library with timeout, not `re`)
-- Validate and sanitize all file paths to prevent traversal attacks
-- Never store full email bodies, only cleaned snippets
-- Token cache file needs restricted permissions
+Full coding standards and review checklist: `CODING_STANDARDS.md`
 
 ## Documentation Index
 
@@ -168,6 +160,6 @@ raise ValueError(
 | `Reference/spec/05-graph-api.md` | Graph API endpoints, pagination, rate limits, delta queries |
 | `Reference/spec/06-safety-and-testing.md` | Autonomy boundaries, data privacy, testing strategy |
 | `Reference/spec/07-setup-guide.md` | Azure AD registration, Docker, dependencies |
-| `Reference/working-examples/` | Working Graph API client, rate limiter, config from existing project |
 | `PRINCIPLES.md` | Toyota + Unix philosophy deep dive |
 | `CODING_STANDARDS.md` | Detailed coding standards and review checklist |
+| `IMPLEMENTATION_PLAN.md` | Build phases and progress tracker |

@@ -365,6 +365,12 @@ categorized as 'newsletter' or 'automated' is a strong signal for P4/FYI Only. A
 sender categorized as 'client' or 'executive' warrants higher priority. If the \
 sender's default_folder is set with high email_count, treat it similarly to \
 sender_history as a strong prior for folder assignment.
+- INTERNAL EMAILS: Many emails will come from colleagues within the same company. \
+For internal emails, the sender's domain tells you NOTHING about the topic — the \
+same person may email about completely different projects and areas. Always classify \
+internal emails based on subject line and body content, not the sender identity. \
+Only use specific sender addresses (not domain wildcards) as a signal when a \
+particular person is strongly associated with a specific project.
 
 LEARNED PREFERENCES (from user correction history):
 {classification_preferences}

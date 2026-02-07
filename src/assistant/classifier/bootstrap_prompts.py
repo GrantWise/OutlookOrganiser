@@ -140,11 +140,16 @@ Analyze the following emails and identify:
 
 1. PROJECTS - Active work streams with defined outcomes or deadlines.
    For each: name, suggested folder path (Projects/Name), signal keywords \
-(subjects, body terms), key sender domains.
+(subjects, body terms), and specific sender email addresses.
+   IMPORTANT: Do NOT use the user's own company domain as a wildcard sender \
+pattern (e.g., "*@company.com"). Internal colleagues email about many different \
+topics — the domain tells you nothing about the project. Only list specific \
+sender addresses that are strongly tied to a particular project. External \
+domains (clients, partners, vendors) are useful as wildcard patterns.
 
 2. AREAS - Ongoing responsibilities that don't have end dates.
    For each: name, suggested folder path (Areas/Name), signal keywords, \
-key sender domains.
+and specific sender addresses (same rule: no internal domain wildcards).
 
 3. SENDER CLUSTERS - Groups of senders that should be auto-routed:
    - Newsletters and marketing emails (look for patterns: marketing language, \
@@ -185,6 +190,18 @@ another says "key contact", examine the evidence and pick the correct classifica
 6. GENERATE auto_rules for sender clusters with high-confidence routing \
 (newsletters, automated notifications).
 7. IDENTIFY key_contacts with suggested priority_boost values.
+8. REMOVE internal company domain wildcards from sender patterns. The user's \
+own company domain (e.g., "*@company.com") should NEVER appear as a sender \
+signal for projects or areas, because internal colleagues email about many \
+different topics. Only use specific individual sender addresses that are \
+strongly associated with a particular project. External domains (clients, \
+partners, vendors) are fine as wildcard patterns.
+
+IMPORTANT: priority_default MUST be one of these exact strings:
+- "P1 - Urgent Important"
+- "P2 - Important"
+- "P3 - Urgent Low"
+- "P4 - Low"
 
 Respond with ONLY valid YAML (no markdown fences, no explanatory text) \
 matching this schema:
@@ -362,14 +379,12 @@ def parse_batch_yaml_response(raw_text: str) -> dict[str, Any]:
     except yaml.YAMLError as e:
         preview = cleaned[:500]
         raise ValueError(
-            f"Malformed YAML in batch analysis response. "
-            f"YAML error: {e}. Preview: {preview!r}"
+            f"Malformed YAML in batch analysis response. YAML error: {e}. Preview: {preview!r}"
         ) from e
 
     if not isinstance(parsed, dict):
         raise ValueError(
-            f"Expected YAML dict, got {type(parsed).__name__}. "
-            f"Preview: {str(parsed)[:500]!r}"
+            f"Expected YAML dict, got {type(parsed).__name__}. Preview: {str(parsed)[:500]!r}"
         )
 
     # Validate required top-level keys (lenient: warn but don't fail on missing optional keys)
@@ -420,14 +435,12 @@ def parse_consolidated_yaml_response(raw_text: str) -> dict[str, Any]:
     except yaml.YAMLError as e:
         preview = cleaned[:500]
         raise ValueError(
-            f"Malformed YAML in consolidation response. "
-            f"YAML error: {e}. Preview: {preview!r}"
+            f"Malformed YAML in consolidation response. YAML error: {e}. Preview: {preview!r}"
         ) from e
 
     if not isinstance(parsed, dict):
         raise ValueError(
-            f"Expected YAML dict, got {type(parsed).__name__}. "
-            f"Preview: {str(parsed)[:500]!r}"
+            f"Expected YAML dict, got {type(parsed).__name__}. Preview: {str(parsed)[:500]!r}"
         )
 
     # Consolidated schema requires more keys

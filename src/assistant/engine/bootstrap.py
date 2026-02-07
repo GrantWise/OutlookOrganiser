@@ -189,6 +189,11 @@ class BootstrapEngine:
         # 7. Write proposed config
         proposed_path = self._write_proposed_config(taxonomy)
 
+        # 7b. Update discovery counts from taxonomy
+        stats.projects_discovered = len(taxonomy.get("projects", []))
+        stats.areas_discovered = len(taxonomy.get("areas", []))
+        stats.auto_rules_generated = len(taxonomy.get("auto_rules", []))
+
         # 8. Populate sender profiles
         senders_count = await self._populate_sender_profiles(emails, taxonomy, stats)
         stats.senders_profiled = senders_count
