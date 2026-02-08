@@ -2,7 +2,7 @@
 
 **Version:** 1.0 | **Last Updated:** 2026-02-07
 
-> **Purpose:** This document records the outcome of a deliberate architecture review comparing Docker-local deployment against Azure cloud hosting. It documents what was decided, why, and — critically — what changes this introduces to the Phase 2 and Phase 3 plans in the existing specifications. Claude Code should treat this as authoritative guidance that supersedes conflicting details in other spec documents.
+> **Purpose:** This document records the outcome of a deliberate architecture review comparing Docker-local deployment against Azure cloud hosting. It documents what was decided, why, and -- critically -- what changes this introduces to the Phase 2 and Phase 3 plans in the existing specifications. Claude Code should treat this as authoritative guidance that supersedes conflicting details in other spec documents.
 
 ---
 
@@ -10,10 +10,10 @@
 
 | Question | Decision |
 |----------|----------|
-| Should we move to Azure hosting? | **No — stay Docker-local through Phase 3** |
-| Should we use webhooks for near-real-time email? | **No — use aggressive delta query polling instead** |
-| Does the current architecture block Phase 4 team deployment? | **No — the Dockerfile is the migration vehicle** |
-| Do we need to change the database? | **No — SQLite stays, but isolate the data access layer** |
+| Should we move to Azure hosting? | **No -- stay Docker-local through Phase 3** |
+| Should we use webhooks for near-real-time email? | **No -- use aggressive delta query polling instead** |
+| Does the current architecture block Phase 4 team deployment? | **No -- the Dockerfile is the migration vehicle** |
+| Do we need to change the database? | **No -- SQLite stays, but isolate the data access layer** |
 
 ---
 
@@ -25,11 +25,11 @@ This is the most important technical finding. Every Azure container hosting opti
 
 > "It's not recommended to use storage mounts for local databases such as SQLite, or for any other applications and components that rely on file handles and locks."
 
-Real-world results confirm this: developers consistently hit `SQLITE_BUSY: database is locked` errors when running SQLite on Azure Files, even with WAL mode enabled. The recommended Azure fix is "migrate to PostgreSQL" — which adds $13+/month, a managed service dependency, connection string management, and a new failure mode. For a single-user agent, this is pure overhead.
+Real-world results confirm this: developers consistently hit `SQLITE_BUSY: database is locked` errors when running SQLite on Azure Files, even with WAL mode enabled. The recommended Azure fix is "migrate to PostgreSQL" -- which adds $13+/month, a managed service dependency, connection string management, and a new failure mode. For a single-user agent, this is pure overhead.
 
 **Running locally means SQLite just works.** WAL mode handles concurrent access from the triage engine and FastAPI review UI without issue.
 
-### 2.2 Webhooks Require a Public HTTPS Endpoint — Polling Does Not
+### 2.2 Webhooks Require a Public HTTPS Endpoint -- Polling Does Not
 
 Microsoft Graph webhooks require a publicly accessible HTTPS endpoint for notification delivery and subscription validation. For a Docker container on a local machine, the options are:
 
@@ -45,14 +45,14 @@ The device code flow with delegated permissions (`Mail.ReadWrite`, `Mail.Send`, 
 
 ### 2.4 Cost Is Effectively Zero Locally
 
-The Docker container uses negligible compute on a machine that's already running. The only operating cost is Claude API usage (~$0.10–0.30/day). Moving to Azure would add:
+The Docker container uses negligible compute on a machine that's already running. The only operating cost is Claude API usage (~$0.10-0.30/day). Moving to Azure would add:
 
-- Azure Container Apps (always-on idle): ~$5–15/month
+- Azure Container Apps (always-on idle): ~$5-15/month
 - Azure Database for PostgreSQL (if replacing SQLite): ~$13+/month
 - Azure Event Hubs (if using webhooks): ~$11/month
 - Azure Container Registry: ~$5/month
 
-Total: ~$35–45/month for zero functional benefit in Phase 1–3.
+Total: ~$35-45/month for zero functional benefit in Phase 1-3.
 
 ---
 
@@ -60,7 +60,7 @@ Total: ~$35–45/month for zero functional benefit in Phase 1–3.
 
 The Docker-local architecture does **not** create walls for Phase 4. When team deployment is needed, the migration is bounded and incremental:
 
-| Component | Phase 1–3 (Local) | Phase 4 (Azure) |
+| Component | Phase 1-3 (Local) | Phase 4 (Azure) |
 |-----------|-------------------|-----------------|
 | Compute | Docker Desktop | Azure Container Apps (Consumption plan) |
 | Database | SQLite with WAL | Azure Database for PostgreSQL Flexible Server |
@@ -70,7 +70,7 @@ The Docker-local architecture does **not** create walls for Phase 4. When team d
 
 **The existing Dockerfile is the migration vehicle.** The same image that runs locally can be pushed to Azure Container Registry and deployed to Container Apps. The docker-compose.yaml maps almost directly to Container Apps configuration.
 
-**Estimated Phase 4 Azure cost:** ~$30–50/month for a small team (Container Apps + PostgreSQL Flexible Server burstable B1ms + Event Hubs Basic).
+**Estimated Phase 4 Azure cost:** ~$30-50/month for a small team (Container Apps + PostgreSQL Flexible Server burstable B1ms + Event Hubs Basic).
 
 ---
 
@@ -86,7 +86,7 @@ The original spec called for:
 
 With webhook subscription management, lifecycle notification URLs, public HTTPS endpoint handling, and subscription renewal every 2 days.
 
-**This is removed from Phase 2.** Webhooks add significant infrastructure complexity (public endpoint, subscription renewal, lifecycle events, validation handling) for a marginal latency improvement on a single mailbox. The implementation sequence in the architecture audit document — "(1) delta queries, (2) webhook subscriptions, (3) wire webhooks to trigger delta queries, (4) reduce polling to 6-hour fallback" — assumed an eventual cloud deployment.
+**This is removed from Phase 2.** Webhooks add significant infrastructure complexity (public endpoint, subscription renewal, lifecycle events, validation handling) for a marginal latency improvement on a single mailbox. The implementation sequence in the architecture audit document -- "(1) delta queries, (2) webhook subscriptions, (3) wire webhooks to trigger delta queries, (4) reduce polling to 6-hour fallback" -- assumed an eventual cloud deployment.
 
 ### 4.2 ADDED: Aggressive Delta Query Polling (Replaces Webhooks)
 
@@ -97,7 +97,7 @@ Instead of webhooks, Phase 2 upgrades the existing polling mechanism:
 **Phase 2 upgrade:**
 
 1. **Implement delta queries** as a drop-in replacement for full-list polling. Use `GET /me/mailFolders('Inbox')/messages/delta?$select=subject,from,receivedDateTime,categories` and persist the `deltaLink` in `agent_state`.
-2. **Reduce polling interval to 5 minutes.** Delta queries are extremely lightweight — they return only changes since the last sync. At ~100 emails/day, most delta queries will return zero results and consume negligible API quota.
+2. **Reduce polling interval to 5 minutes.** Delta queries are extremely lightweight -- they return only changes since the last sync. At ~100 emails/day, most delta queries will return zero results and consume negligible API quota.
 3. **Keep APScheduler** as the trigger mechanism (no webhook infrastructure needed).
 4. **Handle 410 Gone** (delta token expiry) as already specified: log warning, fall back to timestamp-based query, re-establish delta token on next cycle.
 5. **Handle deduplication** as already specified: collect all message IDs from delta response, deduplicate by `id`, check for folder moves on existing messages.
@@ -113,11 +113,11 @@ The following Phase 2 items are unaffected by this architecture decision:
 1. Waiting-for tracker (automatic detection + manual marking)
 2. Daily digest generation
 3. Learning from corrections via classification preferences memory
-4. Delta queries for efficient inbox polling ← **now the primary near-real-time mechanism, not just an efficiency upgrade**
+4. Delta queries for efficient inbox polling <- **now the primary near-real-time mechanism, not just an efficiency upgrade**
 5. Confidence calibration
 6. Sender affinity auto-rules
-7. ~~Token cache encryption at rest~~ → **REMOVED (file permissions mode 600 sufficient for Docker-local)**
-8. ~~Webhook + delta query hybrid~~ → **REMOVED (replaced by item 4 with 5-minute polling)**
+7. ~~Token cache encryption at rest~~ -> **REMOVED (file permissions mode 600 sufficient for Docker-local)**
+8. ~~Webhook + delta query hybrid~~ -> **REMOVED (replaced by item 4 with 5-minute polling)**
 9. Auto-rules hygiene
 10. Suggestion queue management
 11. Stats & accuracy dashboard (`/stats`)
@@ -128,7 +128,7 @@ The following Phase 2 items are unaffected by this architecture decision:
 
 For clarity, the revised Phase 2 build list is:
 
-1. **Delta queries with 5-minute polling interval** (replaces both the "delta queries for efficiency" item and the "webhook hybrid" item — these are now one feature)
+1. **Delta queries with 5-minute polling interval** (replaces both the "delta queries for efficiency" item and the "webhook hybrid" item -- these are now one feature)
 2. Learning from corrections via classification preferences memory
 3. Suggestion queue management (auto-expire + auto-approve)
 4. Sender affinity auto-rules
@@ -148,7 +148,7 @@ For clarity, the revised Phase 2 build list is:
 
 Phase 3 (autonomous mode, new project detection, auto-archive, weekly reports, email digest delivery) is entirely unaffected by this architecture decision. All Phase 3 features operate within the existing Docker-local architecture:
 
-- **Autonomous mode** is a behaviour change in the triage engine (confidence threshold → auto-execute), not an infrastructure change
+- **Autonomous mode** is a behaviour change in the triage engine (confidence threshold -> auto-execute), not an infrastructure change
 - **New project detection** is a classifier enhancement
 - **Auto-archive** operates on existing Graph API folder operations
 - **Weekly review report** extends the digest generation logic
@@ -156,22 +156,22 @@ Phase 3 (autonomous mode, new project detection, auto-archive, weekly reports, e
 
 ### 5.2 Email Digest Delivery Note
 
-The Phase 3 feature "email digest delivery" (sending the digest to the user's own inbox) works perfectly with the local architecture using the existing `Mail.Send` delegated permission. No SMTP server or external email service is needed — the Graph API handles delivery.
+The Phase 3 feature "email digest delivery" (sending the digest to the user's own inbox) works perfectly with the local architecture using the existing `Mail.Send` delegated permission. No SMTP server or external email service is needed -- the Graph API handles delivery.
 
 ---
 
 ## 6. Changes to `05-graph-api.md`
 
-### 6.1 Section 8 ("Webhook + Delta Query Hybrid") — Reclassified
+### 6.1 Section 8 ("Webhook + Delta Query Hybrid") -- Reclassified
 
 Section 8 of `05-graph-api.md` should be understood as **Phase 4 reference material**, not Phase 2 implementation guidance. The webhook subscription management details (subscription creation, renewal, lifecycle notifications, validation handling) remain technically accurate and will be relevant when/if the service moves to Azure for team deployment. But they are not part of the Phase 2 build plan.
 
-### 6.2 Delta Query Implementation (Section 7) — Now Primary
+### 6.2 Delta Query Implementation (Section 7) -- Now Primary
 
 Section 7 of `05-graph-api.md` ("Delta Query Polling") becomes the primary near-real-time mechanism. The only change from what's already specified:
 
 - **Polling interval:** Change from the Phase 1 default of 15 minutes to **5 minutes** once delta queries are implemented
-- **No new config fields needed:** The existing `triage.interval_minutes` field is sufficient — just change the default to 5
+- **No new config fields needed:** The existing `triage.interval_minutes` field is sufficient -- just change the default to 5
 
 Everything else in Section 7 (delta token persistence, 410 Gone handling, deduplication, pagination) is implemented exactly as specified.
 
@@ -207,14 +207,14 @@ triage:
   interval_minutes: 5
 ```
 
-No `use_delta_queries` flag is needed — delta queries are used automatically when a delta token is available in `agent_state`, falling back to timestamp polling otherwise. This keeps the config surface minimal.
+No `use_delta_queries` flag is needed -- delta queries are used automatically when a delta token is available in `agent_state`, falling back to timestamp polling otherwise. This keeps the config surface minimal.
 
 ### 8.2 Removed Config Values
 
 The following config values mentioned or implied in earlier specifications are **not needed**:
 
-- `webhook.*` — no public endpoint, no webhook subscriptions (removed from Phase 2)
-- `auth.encrypt_token_cache` — file permissions mode 600 sufficient for Docker-local (removed from Phase 2)
+- `webhook.*` -- no public endpoint, no webhook subscriptions (removed from Phase 2)
+- `auth.encrypt_token_cache` -- file permissions mode 600 sufficient for Docker-local (removed from Phase 2)
 
 ---
 
@@ -224,12 +224,14 @@ The following config values mentioned or implied in earlier specifications are *
 |----------|--------|---------|
 | `01-overview.md` | Phase 2 item list updated | Item 8 (webhooks) removed, item 4 (delta queries) expanded to include near-real-time polling |
 | `02-config-and-schema.md` | Minor config additions | Updated `interval_minutes` default guidance |
-| `03-agent-behaviors.md` | No changes | Triage engine behaviour unchanged — it's triggered by scheduler regardless of polling mechanism |
+| `03-agent-behaviors.md` | No changes | Triage engine behaviour unchanged -- it's triggered by scheduler regardless of polling mechanism |
 | `04-prompts.md` | No changes | Classification prompts are infrastructure-agnostic |
 | `05-graph-api.md` | Section 8 reclassified as Phase 4 reference | Delta queries (Section 7) become the primary near-real-time mechanism |
 | `06-safety-and-testing.md` | No changes | Safety boundaries and testing strategy unaffected |
 | `07-setup-guide.md` | No changes | Docker setup remains as specified |
 | `08-classification-chat.md` | No changes | Classification logic unaffected |
+| `09-architecture-decisions.md` | No changes | Infrastructure decisions unaffected |
+| `10-native-task-integration.md` | New document | Native M365 integration: To Do tasks, categories, immutable IDs (Phase 1.5) |
 
 ---
 

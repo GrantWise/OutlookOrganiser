@@ -50,6 +50,8 @@ class ToolExecutionContext:
     folder_manager: Any
     message_manager: Any
     config: AppConfig
+    task_manager: Any = None
+    category_manager: Any = None
 
 
 # ---------------------------------------------------------------------------
@@ -291,6 +293,13 @@ async def execute_reclassify(args: dict[str, Any], ctx: ToolExecutionContext) ->
 
         # Execute Graph API move
         if ctx.folder_manager and ctx.message_manager:
+            email_data = {
+                "subject": em.subject,
+                "sender_name": em.sender_name,
+                "snippet": em.snippet,
+                "web_link": em.web_link,
+                "received_at": em.received_at,
+            }
             result = execute_email_move(
                 email_id=em.id,
                 folder=folder,
@@ -298,11 +307,24 @@ async def execute_reclassify(args: dict[str, Any], ctx: ToolExecutionContext) ->
                 action_type=action_type,
                 folder_manager=ctx.folder_manager,
                 message_manager=ctx.message_manager,
+                config=ctx.config,
+                task_manager=ctx.task_manager,
+                email_data=email_data,
             )
             if result["graph_error"]:
                 errors.append(f"{em.subject}: {result['graph_error']}")
             else:
                 moved_count += 1
+
+            # Record task_sync if task was created
+            task_info = result.get("task_info")
+            if task_info:
+                await ctx.store.create_task_sync(
+                    email_id=em.id,
+                    todo_task_id=task_info["todo_task_id"],
+                    todo_list_id=task_info["todo_list_id"],
+                    task_type=task_info["task_type"],
+                )
         else:
             moved_count += 1  # Count as success if no Graph managers
 
@@ -510,9 +532,7 @@ async def execute_create_project_or_area(args: dict[str, Any], ctx: ToolExecutio
     # Validate folder uses a known PARA top-level category
     valid_prefixes = ("Projects/", "Areas/", "Reference/", "Archive/")
     if not folder.startswith(valid_prefixes):
-        return (
-            f"Error: Folder must start with one of {', '.join(valid_prefixes)}. Got: '{folder}'"
-        )
+        return f"Error: Folder must start with one of {', '.join(valid_prefixes)}. Got: '{folder}'"
 
     # Check for duplicate names
     existing_names = [p.name for p in ctx.config.projects] + [a.name for a in ctx.config.areas]
@@ -570,6 +590,20 @@ async def execute_create_project_or_area(args: dict[str, Any], ctx: ToolExecutio
         except Exception as e:
             logger.warning("chat_folder_creation_failed", folder=folder, error=str(e))
             # Non-fatal — folder will be created on first email move
+
+    # Create taxonomy category for new areas only (projects are temporary
+    # and the folder hierarchy already conveys the project)
+    if ctx.category_manager and entry_type == "area":
+        from assistant.graph.tasks import AREA_CATEGORY_COLOR
+
+        try:
+            existing_cats = ctx.category_manager.get_categories()
+            if not any(c["displayName"] == name for c in existing_cats):
+                ctx.category_manager.create_category(name, AREA_CATEGORY_COLOR)
+                logger.info("chat_created_taxonomy_category", name=name, color=AREA_CATEGORY_COLOR)
+        except Exception as e:
+            logger.warning("chat_category_creation_failed", name=name, error=str(e))
+            # Non-fatal — category can be created via bootstrap-categories later
 
     await ctx.store.log_action(
         action_type="config_change",

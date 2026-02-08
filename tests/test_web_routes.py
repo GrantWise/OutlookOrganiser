@@ -50,6 +50,8 @@ def app(store: DatabaseStore, sample_config: AppConfig) -> FastAPI:
     test_app.state.folder_manager = None
     test_app.state.triage_engine = None
     test_app.state.scheduler = None
+    test_app.state.task_manager = None
+    test_app.state.category_manager = None
 
     return test_app
 

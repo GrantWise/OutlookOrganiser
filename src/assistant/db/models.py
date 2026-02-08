@@ -1,6 +1,6 @@
 """SQLite database schema and initialization for the Outlook AI Assistant.
 
-This module defines the database schema with all 7 tables:
+This module defines the database schema with all 8 tables:
 - emails: Processed email metadata, classification status
 - suggestions: Compound suggestions (folder + priority + action)
 - waiting_for: Tracked waiting items
@@ -8,6 +8,7 @@ This module defines the database schema with all 7 tables:
 - sender_profiles: Sender categorization for faster routing
 - llm_request_log: Claude API call logging for debugging
 - action_log: Audit trail of all agent actions
+- task_sync: Mapping between To Do tasks and emails (Phase 1.5)
 
 Usage:
     from assistant.db.models import init_database
@@ -27,7 +28,7 @@ from assistant.core.logging import get_logger
 logger = get_logger(__name__)
 
 # Schema version for migrations (increment when schema changes)
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # SQL schema definition
 SCHEMA_SQL = """
@@ -183,6 +184,21 @@ CREATE TABLE IF NOT EXISTS action_log (
 
 CREATE INDEX IF NOT EXISTS idx_action_log_timestamp ON action_log(timestamp);
 CREATE INDEX IF NOT EXISTS idx_action_log_email ON action_log(email_id);
+
+-- Track mapping between To Do tasks and emails (Phase 1.5)
+CREATE TABLE IF NOT EXISTS task_sync (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email_id TEXT REFERENCES emails(id),          -- Graph message ID (immutable)
+    todo_task_id TEXT NOT NULL,                    -- Graph To Do task ID
+    todo_list_id TEXT NOT NULL,                    -- Graph To Do list ID
+    task_type TEXT NOT NULL,                       -- 'waiting_for', 'needs_reply', 'review', 'delegated'
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    synced_at DATETIME,                            -- Last time status was synced from Graph API
+    status TEXT DEFAULT 'active'                    -- 'active', 'completed', 'deleted'
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_sync_email ON task_sync(email_id);
+CREATE INDEX IF NOT EXISTS idx_task_sync_todo ON task_sync(todo_task_id);
 """
 
 
@@ -295,6 +311,7 @@ async def verify_schema(db_path: str | Path) -> bool:
         "sender_profiles",
         "llm_request_log",
         "action_log",
+        "task_sync",
     ]
 
     try:

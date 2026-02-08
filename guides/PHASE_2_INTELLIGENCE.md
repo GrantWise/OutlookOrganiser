@@ -1,14 +1,18 @@
 # Phase 2 — Intelligence
 
-> **Prerequisites:** Phase 1 (Foundation/MVP) fully implemented and tested against a live mailbox.
+> **Prerequisites:** Phase 1 (Foundation/MVP) and Phase 1.5 (Native M365 Integration) fully implemented and tested against a live mailbox.
 > **Theme:** Make the system smarter, faster, and self-improving.
 > **Builds on:** All existing modules — extends, never replaces.
+>
+> **Phase 1.5 plumbing available:** Phase 1.5 establishes native Microsoft 365 integration — To Do task creation via `graph_tasks.py`, category management (framework + taxonomy categories in the Outlook master category list), immutable message IDs, the `task_sync` table, and the triage engine hook that creates tasks on suggestion approval. Phase 2 features 2B, 2C, and 2D build directly on this plumbing to add bidirectional sync, email flags, calendar awareness, and category growth through learning. See `Reference/spec/10-native-task-integration.md` for full architecture details.
 
 ---
 
 ## Overview
 
-Phase 1 delivers the core loop: scan, classify, suggest, review. Phase 2 makes that loop *intelligent*. The system learns from user corrections, detects patterns in sender behavior, reduces API costs through delta queries, generates daily digests to surface what matters, and provides dashboards for accuracy tracking and sender management.
+Phase 1 delivers the core loop: scan, classify, suggest, review. Phase 1.5 adds native M365 integration: To Do tasks, categories, and immutable IDs. Phase 2 makes the loop *intelligent*. The system learns from user corrections, detects patterns in sender behavior, reduces API costs through delta queries, generates daily digests to surface what matters, and provides dashboards for accuracy tracking and sender management.
+
+Phase 2 also absorbs several items originally scoped for Phase 1.5 but deferred to keep Phase 1.5 lean: email `followUpFlag` operations (Feature 2B), calendar awareness with `Calendars.Read` (Feature 2C), bidirectional task sync (Feature 2B), the `manage_category` chat tool (Feature 2D), `AVAILABLE CATEGORIES` in prompts (Feature 2D), and category growth through learning (Feature 2D).
 
 Every feature in this phase extends the existing foundation. No existing interfaces change. New config fields are additive with sensible defaults so existing `config.yaml` files continue to work without modification.
 
@@ -19,9 +23,9 @@ Every feature in this phase extends the existing foundation. No existing interfa
 | # | Feature | New Files | Extended Files |
 |---|---------|-----------|----------------|
 | 2A | Delta Queries + Fast Polling | — | `graph/client.py`, `engine/triage.py` |
-| 2B | Waiting-For Tracker | `engine/waiting_for.py` | `engine/triage.py`, `web/routes.py` |
-| 2C | Daily Digest | `engine/digest.py` | `engine/triage.py`, `cli.py`, `web/routes.py`, `classifier/prompts.py` |
-| 2D | Learning from Corrections | `classifier/preference_learner.py` | `web/routes.py`, `classifier/prompts.py` |
+| 2B | Waiting-For Tracker + To Do Sync + Email Flags | `engine/waiting_for.py` | `engine/triage.py`, `web/routes.py`, `graph/tasks.py`, `db/store.py` |
+| 2C | Daily Digest + Calendar Awareness | `engine/digest.py` | `engine/triage.py`, `cli.py`, `web/routes.py`, `classifier/prompts.py`, `graph/tasks.py` |
+| 2D | Learning from Corrections + Category Growth | `classifier/preference_learner.py` | `web/routes.py`, `classifier/prompts.py`, `chat/tools.py`, `graph/tasks.py` |
 | 2E | Sender Affinity Auto-Rules | — | `web/routes.py`, `classifier/auto_rules.py`, `config.py` |
 | 2F | Auto-Rules Hygiene | — | `classifier/auto_rules.py`, `cli.py` |
 | 2G | Suggestion Queue Management | — | `engine/triage.py`, `db/store.py` |
@@ -47,10 +51,10 @@ Priority 2 — High Value, Independent:
   2G  Suggestion Queue Management   (small scope, quick win)
   2E  Sender Affinity Auto-Rules    (quick win)
 
-Priority 3 — Active Tracking:
-  2B  Waiting-For Tracker           (foundation for 2C)
-  2C  Daily Digest                  (enhanced by 2B)
-  2F  Auto-Rules Hygiene            (pairs with 2E)
+Priority 3 — Active Tracking (builds on Phase 1.5 graph_tasks.py):
+  2B  Waiting-For Tracker + To Do Sync + Email Flags  (builds on Phase 1.5, foundation for 2C)
+  2C  Daily Digest + Calendar Awareness               (builds on Phase 1.5 + 2B, adds Calendars.Read)
+  2F  Auto-Rules Hygiene                              (pairs with 2E)
 
 Priority 4 — Dashboards:
   2H  Stats & Accuracy Dashboard    (depends on correction data from 2D)
@@ -148,11 +152,20 @@ Add to `core/errors.py`, inheriting from existing `GraphAPIError`.
 
 ---
 
-## 2B: Waiting-For Tracker Enhancement
+## 2B: Waiting-For Tracker + To Do Sync + Email Flags
 
 ### What It Does
 
-Transforms the existing passive `waiting_for` table into an active tracking system. Each triage cycle checks tracked conversations for new replies. Items are automatically resolved when a reply arrives, and escalated in the daily digest when overdue.
+Transforms the existing passive `waiting_for` table into an active tracking system with native Microsoft 365 integration. Each triage cycle checks tracked conversations for new replies. Items are automatically resolved when a reply arrives, and escalated in the daily digest when overdue. Builds on Phase 1.5 plumbing to write waiting-for items to both SQLite and To Do, add bidirectional task sync, and optionally set email `followUpFlag` for Outlook visibility.
+
+### Phase 1.5 Dependencies
+
+This feature builds on Phase 1.5 infrastructure:
+- **`graph_tasks.py`** — To Do task CRUD with linkedResources (already implemented)
+- **`task_sync` table** — maps email IDs to To Do task IDs (already implemented)
+- **Triage engine hook** — creates tasks on approval (already implemented)
+
+Phase 2 adds: bidirectional sync (reading completion status back), email flags, and active monitoring logic.
 
 ### User-Facing Behavior
 
@@ -170,9 +183,10 @@ class WaitingForTracker:
     """Active monitoring of waiting-for items.
 
     Called each triage cycle to check for resolved items and flag overdue ones.
+    Writes to both SQLite (AI metadata) and To Do (user visibility) via Phase 1.5 plumbing.
     """
 
-    def __init__(self, store: Store, message_manager: MessageManager) -> None: ...
+    def __init__(self, store: Store, message_manager: MessageManager, task_manager: TaskManager) -> None: ...
 
     async def check_all(self, cycle_id: str) -> WaitingForCheckResult:
         """Check all active waiting-for items for resolution or escalation.
@@ -266,24 +280,33 @@ aging:
 
 ---
 
-## 2C: Daily Digest Generation
+## 2C: Daily Digest + Calendar Awareness
 
 ### What It Does
 
-Generates a morning summary highlighting what needs attention: overdue replies, aging waiting-for items, yesterday's processing stats, pending reviews, and failed classifications.
+Generates a morning summary highlighting what needs attention: overdue replies, aging waiting-for items, yesterday's processing stats, pending reviews, and failed classifications. Optionally reads the CEO's calendar via `getSchedule` to pick optimal delivery timing (avoid interrupting meetings).
+
+### Phase 1.5 Dependencies
+
+This feature builds on Phase 1.5 infrastructure:
+- **`graph_tasks.py`** — To Do task CRUD and category management (already implemented)
+- **`task_sync` table** — maps email IDs to To Do task IDs (already implemented)
+
+Phase 2 adds: reading task completion status from Graph API (via `task_sync` cross-reference) for digest content, and calendar awareness for delivery timing.
 
 ### User-Facing Behavior
 
-A formatted digest delivered at the configured time (default 08:00) via the configured channel (stdout, file, or email). Also accessible via CLI: `python -m assistant digest`.
+A formatted digest delivered at the configured time (default 08:00) via the configured channel (stdout, file, or email). When calendar awareness is enabled, digest delivery is shifted to avoid interrupting meetings (finds the nearest free slot within a configurable window). Also accessible via CLI: `python -m assistant digest`.
 
 ### Digest Content Sections
 
 ```
 1. OVERDUE REPLIES — Emails classified as "Needs Reply" older than warning/critical thresholds
 2. WAITING FOR    — Overdue waiting-for items (past nudge threshold) with age
-3. ACTIVITY       — Yesterday's processing stats (emails processed, auto-ruled, classified, failed)
-4. PENDING REVIEW — Count of pending suggestions awaiting user input
-5. FAILED         — Classifications that failed after 3 attempts
+3. TASK STATUS    — To Do tasks completed/modified by user since last digest (via task_sync cross-reference)
+4. ACTIVITY       — Yesterday's processing stats (emails processed, auto-ruled, classified, failed)
+5. PENDING REVIEW — Count of pending suggestions awaiting user input
+6. FAILED         — Classifications that failed after 3 attempts
 ```
 
 ### How It Builds on Existing Code
@@ -301,6 +324,7 @@ class DigestGenerator:
         self,
         store: Store,
         anthropic_client: anthropic.AsyncAnthropic,
+        task_manager: TaskManager,
         config: AppConfig,
     ) -> None: ...
 
@@ -311,15 +335,21 @@ class DigestGenerator:
         1. Query DB for overdue replies (emails with action_type='Needs Reply',
            age > needs_reply_warning_hours, no user reply)
         2. Query DB for overdue waiting-for items (past nudge_after_hours)
-        3. Query DB for yesterday's processing stats from action_log
-        4. Query DB for pending suggestion count
-        5. Query DB for failed classifications
-        6. Send structured data to Claude Haiku with digest prompt
-        7. Return formatted digest text
+        3. Query task_sync + Graph API for task status changes since last digest
+        4. Query DB for yesterday's processing stats from action_log
+        5. Query DB for pending suggestion count
+        6. Query DB for failed classifications
+        7. Send structured data to Claude Haiku with digest prompt
+        8. Return formatted digest text
         """
 
     async def deliver(self, digest: DigestResult) -> None:
-        """Deliver digest via configured channel (stdout/file/email)."""
+        """Deliver digest via configured channel (stdout/file/email).
+
+        If integrations.calendar.enabled and digest_schedule_aware,
+        check CEO's calendar via getSchedule before delivering —
+        shift to nearest free slot if currently in a meeting.
+        """
 ```
 
 **`classifier/prompts.py`** — Add digest prompt constants (following the existing pattern where triage prompts are constants in this file):
@@ -362,6 +392,29 @@ python -m assistant digest              # Generate and deliver now
 python -m assistant digest --stdout     # Override delivery to stdout
 ```
 
+### Calendar Awareness (requires `Calendars.Read`)
+
+When `integrations.calendar.enabled` and `integrations.calendar.digest_schedule_aware` are both true, the digest delivery checks the CEO's calendar before sending:
+
+```python
+async def _find_delivery_slot(self) -> datetime:
+    """Find optimal digest delivery time by checking calendar availability.
+
+    Uses Graph API getSchedule to check a ±30 minute window around
+    the configured delivery time. If the user is busy (availability
+    char '2' or '3'), shifts delivery to the next free 30-min slot.
+
+    The getSchedule response returns an availabilityView string where
+    each character represents a 30-minute slot:
+      0 = free, 1 = tentative, 2 = busy, 3 = out of office, 4 = working elsewhere
+
+    If no free slot within the window, delivers at the original time
+    (better to interrupt than skip entirely).
+    """
+```
+
+This requires adding `Calendars.Read` to the permission set (the 6th permission, deferred from Phase 1.5). See `Reference/spec/10-native-task-integration.md` Section 9.8 for the updated permissions table.
+
 ### Result Dataclass
 
 ```python
@@ -371,6 +424,8 @@ class DigestResult:
     text: str                    # Formatted digest content
     overdue_replies: int         # Count of overdue reply items
     overdue_waiting: int         # Count of overdue waiting-for items
+    tasks_completed: int         # Count of To Do tasks completed since last digest
+    tasks_modified: int          # Count of To Do tasks modified since last digest
     pending_suggestions: int     # Count of pending suggestions
     failed_classifications: int  # Count of failed classifications
     generated_at: datetime
@@ -390,6 +445,10 @@ Uses existing config fields (already defined in `config.yaml`):
 - `digest.include_sections` (list of section names)
 - `models.digest` (default Haiku 4.5)
 
+New config for calendar awareness (see Config Additions Summary below):
+- `integrations.calendar.enabled` (default true)
+- `integrations.calendar.digest_schedule_aware` (default true)
+
 ### New DB Store Methods
 
 ```python
@@ -397,6 +456,17 @@ async def get_overdue_replies(
     self, warning_hours: int, critical_hours: int
 ) -> list[dict]:
     """Get emails needing reply that are past the warning threshold."""
+
+async def get_task_status_changes(
+    self, since: datetime
+) -> dict:
+    """Get To Do task status changes since last digest via task_sync.
+
+    Cross-references task_sync with Graph API task status to detect
+    tasks completed or modified by the user since the given timestamp.
+
+    Returns: {completed: [...], modified: [...]}
+    """
 
 async def get_processing_stats(
     self, since: datetime
@@ -412,38 +482,55 @@ async def get_processing_stats(
 - Claude API failure during digest formatting: fall back to plain-text template (no AI formatting)
 - Email delivery failure (Graph API): log ERROR, fall back to stdout delivery, include in next digest
 - Empty digest (no overdue items, no pending): still generate with "All clear" message — confirms the system is running
+- Calendar API failure (getSchedule): log WARNING, deliver at configured time (calendar awareness is best-effort)
+- Task status read failure (Graph API): log WARNING, omit task status section from digest, note "task status unavailable"
 
 ### Testing Strategy
 
 **Unit tests:**
 - Digest data gathering queries return correct results
+- Task status changes detected via task_sync cross-reference
 - Claude formatting produces expected structure
 - Fallback to plain-text on Claude failure
 - Delivery routing (stdout vs file vs email)
 - Empty digest generates "all clear" message
+- Calendar awareness shifts delivery to free slot
+- Calendar API failure falls back to configured time
 
 **Integration tests:**
 - Full digest lifecycle: seed data → generate → deliver
 - APScheduler trigger fires at configured time
+- Task completion detection: complete task in To Do → reflected in next digest
 
 ### Verification Checklist
 
 - [ ] Digest generates at configured schedule
-- [ ] All 5 sections populated with correct data
+- [ ] All 6 sections populated with correct data
+- [ ] Task status section shows completed/modified tasks from To Do
 - [ ] `python -m assistant digest` generates on demand
 - [ ] Delivery to stdout works
 - [ ] Delivery to file writes to configured path
 - [ ] Claude API failure falls back to plain-text
 - [ ] Empty digest shows "all clear" message
 - [ ] `last_digest_run` updated in `agent_state`
+- [ ] Calendar awareness defers delivery when user is busy
+- [ ] Calendar API failure falls back to configured time gracefully
 
 ---
 
-## 2D: Learning from Corrections
+## 2D: Learning from Corrections + Category Growth
 
 ### What It Does
 
-Analyzes user corrections from the review UI to discover classification patterns, then stores those patterns as natural language preferences that are included in every future triage prompt. This is the system's primary mechanism for getting smarter over time.
+Analyzes user corrections from the review UI to discover classification patterns, then stores those patterns as natural language preferences that are included in every future triage prompt. Also provides category growth through learning (detecting user-applied categories and proposing formalization), a `manage_category` chat tool for manual category management, and `AVAILABLE CATEGORIES` context in triage/chat prompts.
+
+### Phase 1.5 Dependencies
+
+This feature builds on Phase 1.5 infrastructure:
+- **`graph_tasks.py`** — Category management: read/create/delete master categories (already implemented)
+- **Category bootstrap** — Framework and taxonomy categories established (already implemented)
+
+Phase 2 adds: category growth from user behavior, `manage_category` chat tool, and `AVAILABLE CATEGORIES` in prompts.
 
 ### User-Facing Behavior
 
@@ -452,7 +539,12 @@ After the user corrects several suggestions, the system automatically learns pat
 - "The user prefers P2 over P3 for emails from SYSPRO regardless of content"
 - "Emails from legal@translution.com are always P2 - Important, never P3"
 
-These preferences appear in the `/stats` page and influence future classifications.
+Additionally:
+- When the user manually applies a category in Outlook that the agent hasn't seen, after 3+ occurrences the agent proposes formalizing it as a taxonomy or user category via the chat interface
+- The `manage_category` chat tool allows the user to create, rename, or delete categories through natural language
+- Triage and chat system prompts include `AVAILABLE CATEGORIES` context showing all active categories
+
+These preferences and category information appear in the `/stats` page and influence future classifications.
 
 ### How It Builds on Existing Code
 
@@ -497,6 +589,80 @@ class PreferenceLearner:
 - After approving/correcting a suggestion, check if correction count in last 24 hours exceeds threshold (e.g., 3 corrections)
 - If so, schedule preference update (async, non-blocking)
 - Alternatively: run preference update at end of each triage cycle if new corrections exist
+
+### Category Growth Through Learning
+
+Each triage cycle, the preference learner also checks for user-applied categories:
+
+```python
+async def detect_new_user_categories(self) -> list[str]:
+    """Detect categories applied by the user in Outlook that the agent doesn't manage.
+
+    Steps:
+    1. Read master category list via graph_tasks.py
+    2. Compare against known framework + taxonomy + user categories
+    3. For unknown categories seen on 3+ emails, propose formalization
+    4. Return list of category names to propose to the user via chat
+    """
+```
+
+When a user-applied category reaches the threshold (3+ occurrences), the agent surfaces a proposal in the chat interface:
+- "I noticed you've applied the category 'Board Meetings' to 5 emails. Would you like me to formalize this as a taxonomy category?"
+- On approval: creates the category in the master list (if not already there) and records it as a managed category
+
+### `manage_category` Chat Tool (deferred from Phase 1.5)
+
+**`chat/tools.py`** — Add the `manage_category` tool:
+
+```python
+MANAGE_CATEGORY_TOOL = {
+    "name": "manage_category",
+    "description": "Create, rename, or delete a custom category in the Outlook master category list.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["create", "delete"],
+                "description": "Action to perform on the category"
+            },
+            "category_name": {
+                "type": "string",
+                "description": "Name of the category to create or delete"
+            },
+            "color_preset": {
+                "type": "string",
+                "description": "Optional color preset (preset0-preset24) for new categories"
+            }
+        },
+        "required": ["action", "category_name"]
+    }
+}
+```
+
+Safety rules:
+- **Cannot delete framework categories** (P1–P4, action types) — tool returns an error
+- **Cannot delete taxonomy categories** — must use `remove_project_or_area` tool instead
+- **User-tier categories only** — this tool manages the third tier of categories
+- Rename is not supported by Graph API (`displayName` is immutable after creation) — tool suggests delete + create instead
+
+### AVAILABLE CATEGORIES in Prompts (deferred from Phase 1.5)
+
+**`classifier/prompts.py`** — Add dynamic `AVAILABLE CATEGORIES` section to the triage and chat system prompts:
+
+```python
+def build_available_categories_section(categories: list[str]) -> str:
+    """Build the AVAILABLE CATEGORIES section for system prompts.
+
+    Groups categories by tier (framework, taxonomy, user) for clarity.
+    Only included when the learning system is active (Phase 2).
+    """
+```
+
+This gives Claude visibility into the full category taxonomy so it can:
+- Suggest existing categories when relevant (instead of inventing new ones)
+- Detect when a user correction implies a new category should exist
+- Provide accurate category information in chat responses
 
 ### Preference Update Prompt
 
@@ -555,6 +721,9 @@ learning:
 - No corrections in lookback window: skip update, no error
 - Preferences text exceeds max length: truncate with WARNING log
 - Contradictory corrections: Claude resolves conflicts based on recency (newer corrections win)
+- Category growth detection failure (Graph API): log WARNING, skip detection for this cycle
+- `manage_category` tool: attempting to delete framework/taxonomy categories returns clear error message to user
+- Category rename attempted: tool explains `displayName` is immutable, suggests delete + create workflow
 
 ### Testing Strategy
 
@@ -564,10 +733,15 @@ learning:
 - Preference storage and retrieval
 - Min correction threshold respected
 - Existing preferences preserved when not contradicted
+- User-applied category detection (3+ occurrences threshold)
+- `manage_category` tool: create, delete, reject framework deletion
+- `AVAILABLE CATEGORIES` prompt section assembly with grouped tiers
 
 **Integration tests:**
 - Full cycle: seed corrections → update preferences → verify prompt includes new preferences
 - Contradictory corrections resolved
+- Category growth: manually apply category to 3+ emails → agent proposes formalization
+- `manage_category` tool: create category → verify exists in master list
 
 ### Verification Checklist
 
@@ -578,6 +752,12 @@ learning:
 - [ ] Preferences appear in triage classification prompts
 - [ ] Claude API failure does not corrupt existing preferences
 - [ ] Preferences visible in `/stats` page
+- [ ] User-applied categories detected after 3+ occurrences
+- [ ] Category formalization proposed via chat interface
+- [ ] `manage_category` tool creates user-tier categories
+- [ ] `manage_category` tool rejects deletion of framework/taxonomy categories
+- [ ] `AVAILABLE CATEGORIES` section appears in triage and chat prompts
+- [ ] Category groups shown by tier (framework, taxonomy, user)
 
 ---
 
@@ -1270,27 +1450,41 @@ None. Degradation thresholds are constants (3 consecutive failures), not user-co
 
 ## Database Migration Strategy
 
-Phase 2 adds one new table (`auto_rule_matches`) and new `agent_state` keys. No existing tables are modified.
+Phase 2 adds one new table (`auto_rule_matches`), extends the Phase 1.5 `task_sync` table with two new columns, and adds new `agent_state` keys.
 
 ```python
 # In db/models.py, add to schema creation:
 PHASE_2_MIGRATIONS = [
+    # New table for auto-rule match tracking (Feature 2F)
     """CREATE TABLE IF NOT EXISTS auto_rule_matches (
         rule_name TEXT PRIMARY KEY,
         match_count INTEGER DEFAULT 0,
         last_match_at DATETIME,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )""",
+
+    # Extend Phase 1.5 task_sync table for email flags and conversation tracking (Feature 2B)
+    """ALTER TABLE task_sync ADD COLUMN flag_set INTEGER DEFAULT 0""",
+    """ALTER TABLE task_sync ADD COLUMN conversation_id TEXT""",
+
+    # Index for conversation-based lookups (Feature 2B waiting-for tracker)
+    """CREATE INDEX IF NOT EXISTS idx_task_sync_conversation
+       ON task_sync(conversation_id)""",
 ]
 ```
 
-Migration runs automatically on startup if the table doesn't exist (`CREATE TABLE IF NOT EXISTS`).
+New `agent_state` keys:
+- `calendar_enabled` — whether `Calendars.Read` permission was successfully granted (Feature 2C)
+- `last_waiting_for_check` — timestamp of last waiting-for check (Feature 2B)
+- `last_digest_run` — timestamp of last digest generation (Feature 2C)
+
+Migration runs automatically on startup. `CREATE TABLE IF NOT EXISTS` and `CREATE INDEX IF NOT EXISTS` are idempotent. `ALTER TABLE ADD COLUMN` migrations should check if the column exists first (SQLite raises an error on duplicate column addition).
 
 ---
 
 ## Config Additions Summary
 
-All new config fields are optional with defaults. Existing configs continue to work unchanged.
+All new config fields are optional with defaults. Existing configs continue to work unchanged. Phase 2 extends the `integrations` section established by Phase 1.5.
 
 ```yaml
 # New in Phase 2 (all optional):
@@ -1303,6 +1497,29 @@ learning:
 
 stats:
   default_lookback_days: 30
+
+# Extensions to Phase 1.5 integrations section:
+integrations:
+  todo:
+    # ...Phase 1.5 fields (enabled, list_name, create_for_action_types)...
+    sync_interval_minutes: 5         # How often to check for user-completed tasks (Feature 2B)
+
+  email_flags:                        # Deferred from Phase 1.5 → Feature 2B
+    enabled: true                    # Set followUpFlag on actionable emails
+    flag_action_types:               # Which action types get flagged
+      - "Needs Reply"
+      - "Waiting For"
+    only_after_approval: true        # Only flag emails after suggestion is approved
+
+  calendar:                           # Deferred from Phase 1.5 → Feature 2C
+    enabled: true                    # Read calendar for schedule awareness
+    digest_schedule_aware: true      # Use calendar to pick optimal digest delivery time
+
+# New permission (Phase 2):
+auth:
+  scopes:
+    # ...Phase 1.5 scopes (Mail.ReadWrite, Mail.Send, MailboxSettings.ReadWrite, User.Read, Tasks.ReadWrite)...
+    - "Calendars.Read"               # Phase 2 — schedule-aware features (Feature 2C)
 ```
 
 > **Note:** The `webhooks` and `auth.encrypt_token_cache` config sections from earlier drafts have been removed per architecture decisions. See `Reference/spec/09-architecture-decisions.md`.

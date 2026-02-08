@@ -20,6 +20,25 @@
 | Get user profile | `/me` | GET |
 | Delta query (inbox) | `/me/mailFolders/inbox/messages/delta` | GET |
 | List thread messages | `/me/messages?$filter=conversationId eq '{id}'` | GET |
+| List To Do task lists | `/me/todo/lists` | GET |
+| Create To Do task list | `/me/todo/lists` | POST |
+| Create task (with linkedResources) | `/me/todo/lists/{listId}/tasks` | POST |
+| Update task | `/me/todo/lists/{listId}/tasks/{taskId}` | PATCH |
+| Delete task | `/me/todo/lists/{listId}/tasks/{taskId}` | DELETE |
+| List tasks (for sync) | `/me/todo/lists/{listId}/tasks` | GET |
+| Create linked resource on task | `/me/todo/lists/{listId}/tasks/{taskId}/linkedResources` | POST |
+| List master categories | `/me/outlook/masterCategories` | GET |
+| Create category | `/me/outlook/masterCategories` | POST |
+| Update category color | `/me/outlook/masterCategories/{id}` | PATCH |
+| Delete category | `/me/outlook/masterCategories/{id}` | DELETE |
+
+Phase 2 additions (not in Phase 1.5):
+
+| Operation | Endpoint | Method |
+|-----------|----------|--------|
+| Set email follow-up flag | `/me/messages/{id}` (PATCH flag property) | PATCH |
+| Get calendar availability | `/me/calendar/getSchedule` | POST |
+| List calendar events | `/me/calendarView` | GET |
 
 ---
 
@@ -38,6 +57,23 @@ $select=id,conversationId,conversationIndex,subject,from,receivedDateTime,
 - `importance`: Sender-set message importance (`low`, `normal`, `high`). Useful as a classification signal for priority.
 - `flag`: Contains `flagStatus` (`notFlagged`, `flagged`, `complete`). If the user has manually flagged an email, it likely needs action.
 - `isRead`: Whether the user has read the email. Combined with age, an unread email from 3 days ago is a stronger signal for "Needs Reply" than a read one.
+
+---
+
+## 2b. Required Select Fields -- To Do Tasks
+
+When fetching tasks for status sync, request:
+
+```
+$select=id,title,status,importance,dueDateTime,completedDateTime,
+        lastModifiedDateTime,categories
+```
+
+The `linkedResources` navigation property must be expanded separately if needed:
+
+```
+$expand=linkedResources
+```
 
 ---
 
@@ -116,7 +152,7 @@ For ongoing triage, the agent should use delta queries where possible:
 **Deduplication:** Delta query results can include the same message multiple times (e.g., when a message is modified during pagination). Before processing:
 1. Collect all message IDs from the delta response pages
 2. Deduplicate by `id` before processing
-3. For messages already in the `emails` table, check if `current_folder` changed (message was moved) — update the folder field but do not re-classify
+3. For messages already in the `emails` table, check if `current_folder` changed (message was moved) -- update the folder field but do not re-classify
 
 **Pagination:** Follow `@odata.nextLink` until `@odata.deltaLink` is returned. Important: changes can occur while following nextLinks. When the first deltaLink is returned, follow it once to check for additional changes before storing it.
 
@@ -130,7 +166,7 @@ For ongoing triage, the agent should use delta queries where possible:
 For Phase 2, combine Microsoft Graph webhooks with delta queries for near-real-time processing:
 
 1. **Subscribe to inbox changes:** `POST /subscriptions` with `changeType: "created,updated"` and `resource: "/me/mailFolders/inbox/messages"`
-2. **Webhook fires** when new email arrives → triggers a delta query cycle immediately
+2. **Webhook fires** when new email arrives -> triggers a delta query cycle immediately
 3. **Delta query** returns only the new/changed messages (same logic as Section 7)
 4. **APScheduler still runs** as a fallback safety net (catches anything webhooks miss, e.g., during subscription renewal gaps)
 
@@ -150,14 +186,14 @@ This reduces latency from "up to 15 minutes" (polling interval) to "seconds" whi
 
 ## 9. Authentication
 
-## 8. Authentication
-
 The agent uses Microsoft's **device code flow** for OAuth2 authentication via MSAL.
 
 Required Microsoft Graph API permissions (delegated):
-- `Mail.ReadWrite` Ã¢â‚¬â€ read email (Inbox + Sent Items) and move between folders
-- `Mail.Send` Ã¢â‚¬â€ future: send digest emails
-- `MailboxSettings.Read` Ã¢â‚¬â€ read user timezone, auto-replies status
-- `User.Read` Ã¢â‚¬â€ read basic user profile (name, email) for identity auto-detection
+- `Mail.ReadWrite` -- read email and move between folders
+- `Mail.Send` -- future: send digest emails
+- `MailboxSettings.ReadWrite` -- read/write user timezone, mailbox config, and master categories (upgraded from Read in Phase 1.5)
+- `User.Read` -- read basic user profile (name, email) for identity auto-detection
+- `Tasks.ReadWrite` -- create and manage To Do tasks linked to emails (Phase 1.5)
+- `Calendars.Read` -- read calendar for schedule-aware features (Phase 2)
 
 For full Azure AD setup instructions, MSAL implementation reference, and troubleshooting, see `07-setup-guide.md`.

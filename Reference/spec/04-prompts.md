@@ -119,7 +119,7 @@ CLASSIFICATION HINTS:
 LEARNED PREFERENCES (from user correction history):
 {classification_preferences || "No learned preferences yet."}
 (These preferences reflect patterns the user has established through corrections.
-Treat them as strong guidance — they represent the user's actual intent when the
+Treat them as strong guidance -- they represent the user's actual intent when the
 standard signals were ambiguous or misleading.)
 
 SENDER PROFILE:
@@ -128,6 +128,10 @@ SENDER PROFILE:
 is a strong signal for P4/FYI Only classification. If the sender's default_folder
 is set with high confidence, treat it similarly to sender_history.)
 ```
+
+**Phase 1.5 note:** The taxonomy category (project/area name to apply as an Outlook category) is derived deterministically by the triage engine from the folder mapping: `suggested_folder` -> config project/area -> `name` -> category. Claude does not return a `taxonomy_category` field -- the classification tool schema is unchanged. No prompt changes in Phase 1.5.
+
+**Phase 2 note:** `AVAILABLE CATEGORIES` will be added to the system prompt when the learning system (Feature 2D) needs Claude to suggest new categories based on user behavior.
 
 ### Tool Definition
 

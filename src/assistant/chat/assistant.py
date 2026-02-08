@@ -61,6 +61,8 @@ class ChatAssistant:
         user_messages: list[dict[str, Any]],
         folder_manager: Any | None,
         message_manager: Any | None,
+        task_manager: Any | None = None,
+        category_manager: Any | None = None,
     ) -> ChatResponse:
         """Process a chat turn: load context, call Claude, execute tools.
 
@@ -70,6 +72,8 @@ class ChatAssistant:
                 Each message is {role: "user"|"assistant", content: str|list}.
             folder_manager: FolderManager for Graph API operations (may be None).
             message_manager: MessageManager for Graph API operations (may be None).
+            task_manager: TaskManager for To Do operations (may be None).
+            category_manager: CategoryManager for category operations (may be None).
 
         Returns:
             ChatResponse with the assistant's reply and any actions taken.
@@ -117,6 +121,8 @@ class ChatAssistant:
             folder_manager=folder_manager,
             message_manager=message_manager,
             config=self._config,
+            task_manager=task_manager,
+            category_manager=category_manager,
         )
 
         # 5. Multi-turn tool use loop

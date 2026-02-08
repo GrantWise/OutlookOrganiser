@@ -1,4 +1,4 @@
-# Outlook AI Assistant — Setup Guide
+# Outlook AI Assistant -- Setup Guide
 
 > **Parent doc:** `01-overview.md` | **Read when:** Setting up Azure AD, configuring Docker, managing dependencies, or troubleshooting authentication.
 
@@ -11,7 +11,7 @@ This guide walks through registering an Azure AD (now Microsoft Entra ID) applic
 ### 1.1 Prerequisites
 
 - A Microsoft 365 account (Business, Enterprise, or personal Outlook.com)
-- Access to the Azure Portal (https://portal.azure.com) — a free Azure account is sufficient; no paid Azure subscription is required for app registration
+- Access to the Azure Portal (https://portal.azure.com) -- a free Azure account is sufficient; no paid Azure subscription is required for app registration
 - Admin consent may be required if your organization restricts app registrations (check with your IT admin)
 
 ### 1.2 Register the Application
@@ -53,15 +53,17 @@ For personal Microsoft accounts, use `common` as the tenant ID instead of the di
 ### 1.5 Configure API Permissions
 
 1. In the left menu, select **API permissions**
-2. Click **+ Add a permission** → **Microsoft Graph** → **Delegated permissions**
+2. Click **+ Add a permission** -> **Microsoft Graph** -> **Delegated permissions**
 3. Add each permission:
 
 | Permission | Purpose | Required for |
 |------------|---------|-------------|
-| `Mail.ReadWrite` | Read emails and move between folders | All phases — core functionality |
-| `Mail.Send` | Send emails on behalf of the user | Phase 2+ — digest delivery via email |
-| `MailboxSettings.Read` | Read user timezone and mailbox configuration | All phases — timezone-aware scheduling |
-| `User.Read` | Read basic user profile (name, email) | All phases — identity auto-detection |
+| `Mail.ReadWrite` | Read emails and move between folders | All phases -- core functionality |
+| `Mail.Send` | Send emails on behalf of the user | Phase 2+ -- digest delivery via email |
+| `MailboxSettings.ReadWrite` | Read/write user timezone, mailbox config, and manage master categories | All phases -- upgraded from Read in Phase 1.5 |
+| `User.Read` | Read basic user profile (name, email) | All phases -- identity auto-detection |
+| `Tasks.ReadWrite` | Create and manage To Do tasks linked to emails | Phase 1.5+ -- task tracking and follow-ups |
+| `Calendars.Read` | Read calendar events and free/busy schedule | Phase 2+ -- schedule-aware features |
 
 4. Click **Add permissions**
 5. If you see "Grant admin consent for [org]", click it and confirm
@@ -72,11 +74,12 @@ For personal Microsoft accounts, use `common` as the tenant ID instead of the di
 After adding permissions, the API permissions page should show:
 
 ```
-Microsoft Graph (4)
-├── Mail.ReadWrite        Delegated    ✅ Granted
-├── Mail.Send             Delegated    ✅ Granted
-├── MailboxSettings.Read  Delegated    ✅ Granted
-└── User.Read             Delegated    ✅ Granted
+Microsoft Graph (5)                              <-- 6 after Phase 2 adds Calendars.Read
+├── Mail.ReadWrite             Delegated    ✅ Granted
+├── Mail.Send                  Delegated    ✅ Granted
+├── MailboxSettings.ReadWrite  Delegated    ✅ Granted
+├── User.Read                  Delegated    ✅ Granted
+└── Tasks.ReadWrite            Delegated    ✅ Granted
 ```
 
 ### 1.7 Add Credentials to Config
@@ -88,8 +91,10 @@ auth:
   scopes:
     - "Mail.ReadWrite"
     - "Mail.Send"
-    - "MailboxSettings.Read"
+    - "MailboxSettings.ReadWrite"
     - "User.Read"
+    - "Tasks.ReadWrite"
+    # Calendars.Read added in Phase 2
   token_cache_path: "/app/data/token_cache.json"
 ```
 
@@ -119,6 +124,20 @@ When you run the agent for the first time (e.g., `python -m assistant bootstrap`
 6. The agent detects successful authentication and continues
 7. Tokens are cached to `data/token_cache.json`
 8. User email is auto-detected from `/me` and stored in `agent_state`
+
+---
+
+## 2.1 Upgrading from Phase 1 (Re-authentication)
+
+If the assistant was previously running with Phase 1 permissions (4 scopes), upgrading to Phase 1.5 requires re-authentication to consent to the new and upgraded permissions (`Tasks.ReadWrite` and `MailboxSettings.ReadWrite` replacing `MailboxSettings.Read`):
+
+1. Stop the assistant
+2. Delete the cached token: `rm data/token_cache.json`
+3. Update `config.yaml` to add the new scopes and `integrations` section
+4. Start the assistant -- it will initiate a new device code flow
+5. Authenticate and consent to the expanded permissions
+6. The assistant will run the category bootstrap (create framework + taxonomy categories, interactive cleanup)
+7. The assistant will detect `immutable_ids_migrated` is not set and run the one-time ID migration
 
 ---
 
@@ -202,7 +221,7 @@ class GraphAuth:
 
 | Problem | Cause | Solution |
 |---------|-------|----------|
-| `AADSTS7000218: request body must contain 'client_assertion' or 'client_secret'` | "Allow public client flows" not enabled | Go to Authentication → Advanced settings → set to Yes |
+| `AADSTS7000218: request body must contain 'client_assertion' or 'client_secret'` | "Allow public client flows" not enabled | Go to Authentication -> Advanced settings -> set to Yes |
 | `AADSTS65001: user or admin has not consented` | Permissions not granted | Ask admin to grant consent, or use admin account to click "Grant admin consent" |
 | `AADSTS50076: configuration change by administrator` | Conditional access policy blocking device code | Contact IT admin; may need to allowlist the app |
 | `AADSTS700016: Application not found` | Wrong client_id or tenant | Verify both in config.yaml match Azure portal |
@@ -217,7 +236,7 @@ class GraphAuth:
 - **Client ID is not a secret** for public client apps (device code flow doesn't use a client secret). Safe in config files but should not be committed to public repositories.
 - **Scope minimization**: The agent only requests the minimum permissions needed. `Mail.Send` can be removed from scopes if email digest delivery is not needed.
 - **Token encryption at rest**: For production use, encrypt the token cache using the `cryptography` package with a key derived from a user-provided passphrase or machine-specific entropy. Implementation deferred to Phase 2.
-- **Revocation**: To revoke the agent's access at any time, go to https://myapps.microsoft.com → click on "Outlook AI Assistant" → click "Revoke". Alternatively, delete the app registration in Azure Portal.
+- **Revocation**: To revoke the agent's access at any time, go to https://myapps.microsoft.com -> click on "Outlook AI Assistant" -> click "Revoke". Alternatively, delete the app registration in Azure Portal.
 
 ---
 
@@ -295,7 +314,7 @@ services:
 ### 7.3 .env.example
 
 ```bash
-# .env — Environment variables for docker-compose
+# .env -- Environment variables for docker-compose
 # Copy this to .env and fill in your values
 ANTHROPIC_API_KEY=sk-ant-...your-key-here...
 TZ=America/New_York
@@ -321,11 +340,11 @@ __pycache__
 
 ### Package Management: uv
 
-The project uses **[uv](https://docs.astral.sh/uv/)** for dependency management — a fast, Rust-based Python package manager that replaces pip, pip-tools, and virtualenv. Benefits over a plain `requirements.txt`:
+The project uses **[uv](https://docs.astral.sh/uv/)** for dependency management -- a fast, Rust-based Python package manager that replaces pip, pip-tools, and virtualenv. Benefits over a plain `requirements.txt`:
 
 - **Lockfile (`uv.lock`)**: Deterministic, reproducible installs across all environments. The lockfile pins exact versions of every dependency (including transitive ones) so builds are byte-for-byte identical.
-- **Automatic dependency resolution**: No need to manually track compatible version ranges — uv resolves them from the constraints in `pyproject.toml`.
-- **Fast**: 10–100x faster than pip for installs and resolution.
+- **Automatic dependency resolution**: No need to manually track compatible version ranges -- uv resolves them from the constraints in `pyproject.toml`.
+- **Fast**: 10-100x faster than pip for installs and resolution.
 - **Standard `pyproject.toml`**: Uses the PEP 621 standard, compatible with any Python tooling.
 
 **Developer workflow:**
@@ -394,7 +413,7 @@ build-backend = "hatchling.backends"
 
 **Notable version choices:**
 - `apscheduler>=3.11.0,<4.0.0`: APScheduler 4.x is a full rewrite with breaking API changes (different scheduler classes, removed sync interfaces). We pin to 3.x for stability.
-- `anthropic>=0.78.0`: The SDK moves fast — pin to a recent version that supports tool use and the latest model strings.
+- `anthropic>=0.78.0`: The SDK moves fast -- pin to a recent version that supports tool use and the latest model strings.
 - `fastapi>=0.128.0`: Recent version with Pydantic v2 as minimum, dropped Pydantic v1 support.
 
 ### .dockerignore (updated)

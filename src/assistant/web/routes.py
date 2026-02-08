@@ -92,11 +92,15 @@ def execute_email_move(
     action_type: str | None,
     folder_manager: Any,
     message_manager: Any,
+    config: AppConfig | None = None,
+    task_manager: Any = None,
+    email_data: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Move an email to a folder via Graph API and set Outlook categories.
+    """Move an email to a folder via Graph API, set categories, and create To Do task.
 
     Resolves the folder ID (auto-creating the folder if it doesn't exist),
-    moves the message, and sets priority + action_type as Outlook categories.
+    moves the message, sets compound categories (priority + action + taxonomy),
+    and optionally creates a To Do task with linkedResource.
 
     The Graph API client methods are synchronous, matching the existing pattern
     used throughout the codebase.
@@ -108,12 +112,24 @@ def execute_email_move(
         action_type: Action type to set as category (e.g., 'Needs Reply').
         folder_manager: FolderManager instance for folder resolution/creation.
         message_manager: MessageManager instance for move/categorize.
+        config: AppConfig for taxonomy derivation and todo settings (optional).
+        task_manager: TaskManager instance for To Do task creation (optional).
+        email_data: Dict with email metadata for task creation (optional):
+            subject, sender_name, snippet, web_link, received_at.
 
     Returns:
-        Dict with 'new_msg_id' (str) and 'graph_error' (str | None).
+        Dict with 'new_msg_id' (str), 'graph_error' (str | None),
+        and 'task_info' (dict | None).
     """
+    from assistant.graph.tasks import (
+        action_type_to_task_type,
+        build_task_from_classification,
+        derive_taxonomy_name,
+    )
+
     graph_error = None
     new_msg_id = email_id
+    task_info = None
 
     try:
         folder_id = folder_manager.get_folder_id(folder)
@@ -129,13 +145,59 @@ def execute_email_move(
         moved_msg = message_manager.move_message(email_id, folder_id)
         new_msg_id = moved_msg.get("id", email_id)
 
+        # Derive taxonomy category from folder + config
+        taxonomy_name = None
+        if config:
+            taxonomy_name = derive_taxonomy_name(folder, config.areas)
+
+        # Build compound categories: priority + action_type + taxonomy
         categories = []
         if priority:
             categories.append(priority)
         if action_type:
             categories.append(action_type)
+        if taxonomy_name:
+            categories.append(taxonomy_name)
         if categories:
             message_manager.set_categories(new_msg_id, categories)
+
+        # Create To Do task if enabled and action type qualifies
+        if (
+            task_manager
+            and config
+            and email_data
+            and config.integrations.todo.enabled
+            and action_type
+            and action_type in config.integrations.todo.create_for_action_types
+        ):
+            try:
+                task_payload = build_task_from_classification(
+                    email_subject=email_data.get("subject", ""),
+                    sender_name=email_data.get("sender_name", ""),
+                    snippet=email_data.get("snippet", ""),
+                    priority=priority or "P3 - Urgent Low",
+                    action_type=action_type,
+                    taxonomy_category=taxonomy_name,
+                    email_id=new_msg_id,
+                    web_link=email_data.get("web_link"),
+                    aging_config=config.aging,
+                    received_at=email_data.get("received_at"),
+                )
+                list_id = task_manager.ensure_task_list(config.integrations.todo.list_name)
+                created_task = task_manager.create_task(list_id, task_payload)
+                task_info = {
+                    "todo_task_id": created_task["id"],
+                    "todo_list_id": list_id,
+                    "task_type": action_type_to_task_type(action_type),
+                }
+            except GraphAPIError as e:
+                logger.warning(
+                    "task_creation_failed",
+                    email_id=email_id,
+                    error=str(e),
+                )
+                # Non-fatal -- email move + categories still succeeded
+
     except GraphAPIError as e:
         graph_error = str(e)
         logger.error(
@@ -145,7 +207,7 @@ def execute_email_move(
             error=str(e),
         )
 
-    return {"new_msg_id": new_msg_id, "graph_error": graph_error}
+    return {"new_msg_id": new_msg_id, "graph_error": graph_error, "task_info": task_info}
 
 
 # ---------------------------------------------------------------------------
@@ -290,12 +352,25 @@ async def review_queue(
         items.append({"suggestion": s, "email": emails_by_id.get(s.email_id)})
 
     # Build folder options for correction dropdowns
-    folder_options = []
+    folder_set: set[str] = set()
     for p in config.projects:
-        folder_options.append(p.folder)
+        folder_set.add(p.folder)
     for a in config.areas:
-        folder_options.append(a.folder)
-    folder_options.sort()
+        folder_set.add(a.folder)
+    # Standard Reference and Archive folders (same as classifier prompt)
+    for ref in (
+        "Reference/Newsletters",
+        "Reference/Dev Notifications",
+        "Reference/Calendar",
+        "Reference/Industry",
+        "Reference/Vendor Updates",
+        "Archive/",
+    ):
+        folder_set.add(ref)
+    # Include any auto-rule folders
+    for rule in config.auto_rules:
+        folder_set.add(rule.action.folder)
+    folder_options = sorted(folder_set)
 
     # Get failed classifications
     failed_emails = await store.get_emails_by_status("failed", limit=50)
@@ -479,10 +554,25 @@ async def approve_suggestion(
 
     # Execute via Graph API
     graph_error = None
+    task_info = None
     folder_mgr = request.app.state.folder_manager
     message_mgr = request.app.state.message_manager
+    task_mgr = getattr(request.app.state, "task_manager", None)
+    app_config = getattr(request.app.state, "config", None)
 
     if folder_mgr and message_mgr and approved:
+        # Fetch email data for task creation
+        email = await store.get_email(suggestion.email_id)
+        email_data = None
+        if email:
+            email_data = {
+                "subject": email.subject,
+                "sender_name": email.sender_name,
+                "snippet": email.snippet,
+                "web_link": email.web_link,
+                "received_at": email.received_at,
+            }
+
         move_result = execute_email_move(
             email_id=suggestion.email_id,
             folder=approved.approved_folder,
@@ -490,8 +580,21 @@ async def approve_suggestion(
             action_type=approved.approved_action_type,
             folder_manager=folder_mgr,
             message_manager=message_mgr,
+            config=app_config,
+            task_manager=task_mgr,
+            email_data=email_data,
         )
         graph_error = move_result["graph_error"]
+        task_info = move_result.get("task_info")
+
+        # Record task_sync if task was created
+        if task_info:
+            await store.create_task_sync(
+                email_id=suggestion.email_id,
+                todo_task_id=task_info["todo_task_id"],
+                todo_list_id=task_info["todo_list_id"],
+                task_type=task_info["task_type"],
+            )
 
     # Log action
     await store.log_action(
@@ -503,6 +606,7 @@ async def approve_suggestion(
             "priority": approved.approved_priority if approved else None,
             "action_type": approved.approved_action_type if approved else None,
             "graph_error": graph_error,
+            "task_created": task_info is not None,
         },
         triggered_by="user_approved",
     )
@@ -563,38 +667,59 @@ async def bulk_approve(
     suggestions = await store.get_pending_suggestions(limit=500)
     approved_count = 0
 
+    folder_mgr = request.app.state.folder_manager
+    message_mgr = request.app.state.message_manager
+    task_mgr = getattr(request.app.state, "task_manager", None)
+    app_config = getattr(request.app.state, "config", None)
+
     for s in suggestions:
         if s.confidence is not None and s.confidence >= body.min_confidence:
             success = await store.approve_suggestion(s.id)
             if success:
                 approved_count += 1
 
-                # Execute via Graph API
-                try:
-                    approved = await store.get_suggestion(s.id)
-                    folder_manager = request.app.state.folder_manager
-                    message_manager = request.app.state.message_manager
+                # Execute via Graph API using shared helper
+                approved = await store.get_suggestion(s.id)
+                if folder_mgr and message_mgr and approved:
+                    # Fetch email data for task creation
+                    email = await store.get_email(s.email_id)
+                    email_data = None
+                    if email:
+                        email_data = {
+                            "subject": email.subject,
+                            "sender_name": email.sender_name,
+                            "snippet": email.snippet,
+                            "web_link": email.web_link,
+                            "received_at": email.received_at,
+                        }
 
-                    if folder_manager and message_manager and approved:
-                        folder_id = folder_manager.get_folder_id(approved.approved_folder)
-                        if not folder_id:
-                            created = folder_manager.create_folder(approved.approved_folder)
-                            folder_id = created["id"]
-                        message_manager.move_message(s.email_id, folder_id)
-
-                        categories = []
-                        if approved.approved_priority:
-                            categories.append(approved.approved_priority)
-                        if approved.approved_action_type:
-                            categories.append(approved.approved_action_type)
-                        if categories:
-                            message_manager.set_categories(s.email_id, categories)
-                except GraphAPIError as e:
-                    logger.warning(
-                        "bulk_approve_graph_error",
-                        suggestion_id=s.id,
-                        error=str(e),
+                    move_result = execute_email_move(
+                        email_id=s.email_id,
+                        folder=approved.approved_folder,
+                        priority=approved.approved_priority,
+                        action_type=approved.approved_action_type,
+                        folder_manager=folder_mgr,
+                        message_manager=message_mgr,
+                        config=app_config,
+                        task_manager=task_mgr,
+                        email_data=email_data,
                     )
+
+                    task_info = move_result.get("task_info")
+                    if task_info:
+                        await store.create_task_sync(
+                            email_id=s.email_id,
+                            todo_task_id=task_info["todo_task_id"],
+                            todo_list_id=task_info["todo_list_id"],
+                            task_type=task_info["task_type"],
+                        )
+
+                    if move_result["graph_error"]:
+                        logger.warning(
+                            "bulk_approve_graph_error",
+                            suggestion_id=s.id,
+                            error=move_result["graph_error"],
+                        )
 
                 await store.log_action(
                     action_type="move",
@@ -723,6 +848,8 @@ async def chat_endpoint(
 
     folder_manager = request.app.state.folder_manager
     message_manager = request.app.state.message_manager
+    task_manager = getattr(request.app.state, "task_manager", None)
+    category_manager = getattr(request.app.state, "category_manager", None)
 
     assistant = ChatAssistant(
         anthropic_client=anthropic_client,
@@ -735,6 +862,8 @@ async def chat_endpoint(
         user_messages=body.messages,
         folder_manager=folder_manager,
         message_manager=message_manager,
+        task_manager=task_manager,
+        category_manager=category_manager,
     )
 
     if result.error:

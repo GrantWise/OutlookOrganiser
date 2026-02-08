@@ -61,6 +61,7 @@ async def lifespan(app: FastAPI):
     from assistant.graph.client import GraphClient
     from assistant.graph.folders import FolderManager
     from assistant.graph.messages import MessageManager, SentItemsCache
+    from assistant.graph.tasks import CategoryManager, TaskManager
 
     # 1. Load config
     try:
@@ -72,6 +73,8 @@ async def lifespan(app: FastAPI):
         app.state.config = None
         app.state.message_manager = None
         app.state.folder_manager = None
+        app.state.task_manager = None
+        app.state.category_manager = None
         app.state.triage_engine = None
         app.state.scheduler = None
         app.state.anthropic_client = None
@@ -81,6 +84,7 @@ async def lifespan(app: FastAPI):
     app.state.config = config
 
     # 2. Initialize auth and Graph client
+    graph_client = None
     try:
         auth = GraphAuth(
             client_id=config.auth.client_id,
@@ -91,13 +95,19 @@ async def lifespan(app: FastAPI):
         graph_client = GraphClient(auth)
         message_manager = MessageManager(graph_client)
         folder_manager = FolderManager(graph_client)
+        task_manager = TaskManager(graph_client)
+        category_manager = CategoryManager(graph_client)
     except (AuthenticationError, Exception) as e:
         logger.error("auth_init_failed", error=str(e))
         message_manager = None
         folder_manager = None
+        task_manager = None
+        category_manager = None
 
     app.state.message_manager = message_manager
     app.state.folder_manager = folder_manager
+    app.state.task_manager = task_manager
+    app.state.category_manager = category_manager
 
     # 3. Initialize database
     db_path = Path("data/assistant.db")
@@ -105,6 +115,9 @@ async def lifespan(app: FastAPI):
     store = DatabaseStore(db_path)
     await store.initialize()
     app.state.store = store
+
+    # 3b. Save graph_client ref for background migrations after server starts
+    _migration_graph_client = graph_client
 
     # 4. Initialize classifier and triage engine
     triage_engine = None
@@ -139,6 +152,7 @@ async def lifespan(app: FastAPI):
                 thread_manager=thread_manager,
                 sent_cache=sent_cache,
                 config=config,
+                category_manager=category_manager,
             )
         except Exception as e:
             logger.error("triage_engine_init_failed", error=str(e))
@@ -157,6 +171,8 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 logger.error("scheduled_triage_failed", error=str(e))
 
+        from datetime import datetime, timedelta
+
         scheduler = BackgroundScheduler()
         scheduler.add_job(
             _run_triage_sync,
@@ -165,7 +181,7 @@ async def lifespan(app: FastAPI):
             id="triage_cycle",
             max_instances=1,
             coalesce=True,
-            next_run_time=None,  # Don't run immediately on startup
+            next_run_time=datetime.now() + timedelta(seconds=60),
         )
         scheduler.start()
         logger.info(
@@ -175,12 +191,78 @@ async def lifespan(app: FastAPI):
 
     app.state.scheduler = scheduler
 
+    # Launch one-time migrations as background tasks (non-blocking)
+    migration_task = None
+    if _migration_graph_client:
+        migration_task = asyncio.create_task(
+            _run_startup_migrations(store, _migration_graph_client, category_manager, config)
+        )
+
     yield
 
     # Shutdown
+    if migration_task and not migration_task.done():
+        migration_task.cancel()
+        logger.info("startup_migrations_cancelled")
     if scheduler:
         scheduler.shutdown(wait=False)
         logger.info("scheduler_stopped")
+
+
+async def _run_startup_migrations(store, graph_client, category_manager, config) -> None:
+    """Run one-time migrations in the background after server startup.
+
+    This runs as an asyncio task so the server can accept connections
+    immediately while migrations process in the background.
+    """
+    try:
+        from assistant.cli import _migrate_to_immutable_ids
+
+        await _migrate_to_immutable_ids(store, graph_client)
+    except Exception as e:
+        logger.warning("immutable_id_migration_skipped", error=str(e))
+
+    if category_manager:
+        try:
+            await _auto_bootstrap_categories(store, category_manager, config)
+        except Exception as e:
+            logger.warning("category_auto_bootstrap_skipped", error=str(e))
+
+
+async def _auto_bootstrap_categories(store, category_manager, config) -> None:
+    """Silently bootstrap categories on serve startup if not done yet.
+
+    Unlike the CLI command, this runs non-interactively (no orphan cleanup).
+    """
+    from assistant.graph.tasks import (
+        AREA_CATEGORY_COLOR,
+        FRAMEWORK_CATEGORIES,
+    )
+
+    already_done = await store.get_state("categories_bootstrapped")
+    if already_done == "true":
+        return
+
+    logger.info("auto_bootstrapping_categories")
+
+    existing = category_manager.get_categories()
+    existing_names = {cat["displayName"] for cat in existing}
+
+    created = 0
+    for name, color in FRAMEWORK_CATEGORIES.items():
+        if name not in existing_names:
+            category_manager.create_category(name, color)
+            created += 1
+
+    # Only areas get taxonomy categories -- projects are temporary and
+    # would accumulate unboundedly in the master category list
+    for area in config.areas:
+        if area.name not in existing_names:
+            category_manager.create_category(area.name, AREA_CATEGORY_COLOR)
+            created += 1
+
+    await store.set_state("categories_bootstrapped", "true")
+    logger.info("auto_bootstrap_categories_complete", created=created)
 
 
 def create_app() -> FastAPI:

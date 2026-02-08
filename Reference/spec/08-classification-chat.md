@@ -1,4 +1,4 @@
-# Outlook AI Assistant — Classification Chat Assistant
+# Outlook AI Assistant -- Classification Chat Assistant
 
 > **Parent doc:** `01-overview.md` | **Read when:** Implementing the contextual chat assistant for reclassification, config refinement, or rule creation from the Review UI.
 
@@ -39,10 +39,10 @@ The Review UI (`/review`) gains a **"Discuss"** button on each suggestion card, 
 
 Clicking "Discuss" opens a slide-out panel on the right side of the review page. The panel contains:
 
-1. **Context header** — Email subject, sender, current suggested classification, confidence score (read-only summary)
-2. **Chat area** — Scrollable message history for the current session
-3. **Input field** — Text input with send button
-4. **Action log** — Collapsible section at the bottom showing config changes made during this session
+1. **Context header** -- Email subject, sender, current suggested classification, confidence score (read-only summary)
+2. **Chat area** -- Scrollable message history for the current session
+3. **Input field** -- Text input with send button
+4. **Action log** -- Collapsible section at the bottom showing config changes made during this session
 
 The panel is dismissed by clicking a close button or clicking outside it. Dismissing the panel discards the chat session (no persistence).
 
@@ -51,7 +51,7 @@ The panel is dismissed by clicking a close button or clicking outside it. Dismis
 **Reclassifying a single email:**
 ```
 User: This should be in Projects/Tradecore Steel, not Areas/Support
-Bot:  Done — I've updated the classification to Projects/Tradecore Steel
+Bot:  Done -- I've updated the classification to Projects/Tradecore Steel
       and approved the suggestion. The email will be moved on the next
       triage cycle.
 
@@ -66,7 +66,7 @@ Bot:  Added "tradecore" to the subject signals for Projects/Tradecore Steel
 
 **Creating a new project:**
 ```
-User: This is a brand new project — Acme Corp onboarding. We need a folder for it.
+User: This is a brand new project -- Acme Corp onboarding. We need a folder for it.
 Bot:  I'll create a new project entry. Based on this email and the thread,
       here's what I'd suggest:
 
@@ -95,9 +95,9 @@ Bot:  I'll create an auto-rule for notifications@industrydigest.com:
       This will skip AI classification entirely for this sender. Go ahead?
 User: Yes
 Bot:  Auto-rule created. I also found 3 other pending suggestions from this
-      sender — want me to approve them all with the same classification?
+      sender -- want me to approve them all with the same classification?
 User: Do it
-Bot:  Done — approved 3 additional suggestions as Reference/Newsletters / P4 / FYI Only.
+Bot:  Done -- approved 3 additional suggestions as Reference/Newsletters / P4 / FYI Only.
 ```
 
 ---
@@ -121,7 +121,7 @@ Content-Type: application/json
 
 Response:
 {
-  "reply": "Done — I've updated the classification...",
+  "reply": "Done -- I've updated the classification...",
   "actions_taken": [
     {
       "type": "reclassify_email",
@@ -131,14 +131,14 @@ Response:
 }
 ```
 
-The frontend maintains the message history client-side and sends the full conversation on each request. The backend is stateless — no server-side session storage.
+The frontend maintains the message history client-side and sends the full conversation on each request. The backend is stateless -- no server-side session storage.
 
 ### Model Selection
 
 The chat assistant uses **Sonnet 4.5** (`claude-sonnet-4-5-20250929`). Rationale:
 - These are infrequent, high-value interactions (a few per day at most)
 - The assistant needs to reason about config structure, suggest changes, and explain trade-offs
-- Cost impact is negligible — even 20 chat interactions per day at Sonnet rates is < $0.50/day
+- Cost impact is negligible -- even 20 chat interactions per day at Sonnet rates is < $0.50/day
 - Add to `config.yaml` models section as `chat: "claude-sonnet-4-5-20250929"`
 
 ### Request Flow
@@ -181,11 +181,11 @@ config changes, or rule creation.
 
 You have tools to make changes. Always confirm before making config changes
 (adding projects, areas, or auto-rules). For reclassifications, you can act
-immediately — and always reclassify the entire conversation thread by default,
+immediately -- and always reclassify the entire conversation thread by default,
 not just the single email. Only use scope "single" if the user explicitly asks
 to change just one email in a thread.
 
-Be concise and action-oriented. The user is a busy CEO — don't over-explain.
+Be concise and action-oriented. The user is a busy CEO -- don't over-explain.
 After making changes, briefly confirm what you did and mention when it takes
 effect.
 
@@ -226,7 +226,7 @@ CURRENT KEY CONTACTS:
 
 ### 6.1 reclassify_email
 
-Reclassifies the current email **and all other emails in the same conversation thread**. This is the default behaviour because if a classification is wrong for one email in a thread, it's wrong for the entire thread — they belong to the same conversation. The `scope` parameter allows restricting to just the current email in the rare case where only one message in a thread needs different treatment.
+Reclassifies the current email **and all other emails in the same conversation thread**. This is the default behaviour because if a classification is wrong for one email in a thread, it's wrong for the entire thread -- they belong to the same conversation. The `scope` parameter allows restricting to just the current email in the rare case where only one message in a thread needs different treatment.
 
 ```json
 {
@@ -269,7 +269,7 @@ Reclassifies the current email **and all other emails in the same conversation t
    - If `scope` is `"single"`: target only the current email
 2. **For each target email:**
    - Look up the corresponding `suggestions` row
-   - If a suggestion exists (any status — pending, approved, or partial): update `approved_folder`, `approved_priority`, `approved_action_type`
+   - If a suggestion exists (any status -- pending, approved, or partial): update `approved_folder`, `approved_priority`, `approved_action_type`
    - If `approve` is true: set `status = 'approved'`, `resolved_at = now()`
    - If no suggestion exists (email was auto-ruled or has no suggestion record): create a new suggestion record with the given classification and mark it approved
 3. **Update the `emails` table:** set `inherited_folder` to the new folder for all thread emails, so future thread inheritance uses the corrected classification
@@ -432,7 +432,8 @@ Creates a new project or area entry in `config.yaml`.
 4. Create new entry and append to the appropriate list
 5. Validate and write atomically
 6. Optionally trigger folder creation via Graph API (create the Outlook folder if it doesn't exist)
-7. Log to `action_log`
+7. **Create taxonomy category** via `graph_tasks.py` -- calls `create_category()` with the project/area name and the appropriate color preset for taxonomy-tier categories. This ensures the new project/area is immediately available for compound category application during triage. (Phase 1.5+)
+8. Log to `action_log`
 
 ### 6.5 fetch_thread_emails
 
@@ -455,7 +456,7 @@ Retrieves all emails in the current conversation thread for the assistant to ref
 2. For each email, include: sender, subject, received_at, snippet, current classification (from suggestions table), status
 3. Return as structured list
 
-Note: The `conversation_id` is known from the current email context — the tool needs no parameters.
+Note: The `conversation_id` is known from the current email context -- the tool needs no parameters.
 
 ### 6.6 fetch_sender_history
 
@@ -564,12 +565,12 @@ Actions per suggestion:
   - ❌ Reject
   - 🔗 Open in Outlook
   - 📝 Create Rule
-  - 💬 Discuss        ← NEW: opens chat panel for this email
+  - 💬 Discuss        <- NEW: opens chat panel for this email
 ```
 
 ### 8.7 Build phase placement
 
-This feature is part of **Phase 1** — it addresses a critical usability gap in the core review workflow. Without it, config refinement requires YAML editing, which contradicts the target user profile.
+This feature is part of **Phase 1** -- it addresses a critical usability gap in the core review workflow. Without it, config refinement requires YAML editing, which contradicts the target user profile.
 
 Add to Phase 1 item list in `01-overview.md`:
 
@@ -593,7 +594,7 @@ Add to Phase 1 item list in `01-overview.md`:
 - Signal deduplication: verify existing keywords are not re-added
 
 ### Integration Tests
-- Full chat round-trip: send message → Claude responds with tool call → tool executes → response returned
+- Full chat round-trip: send message -> Claude responds with tool call -> tool executes -> response returned
 - Reclassify flow: verify suggestion record is updated and status changes to approved
 - Thread reclassify: verify all pending suggestions in thread are updated
 - Config modification flow: verify config.yaml is updated and validates after change
@@ -601,7 +602,7 @@ Add to Phase 1 item list in `01-overview.md`:
 
 ### Manual Testing
 - Chat panel UX: open, send messages, close, reopen on different email
-- Multi-turn conversation: reclassify → add signals → create rule in one session
+- Multi-turn conversation: reclassify -> add signals -> create rule in one session
 - Config hot-reload verification: make change via chat, trigger triage cycle, verify new classification uses updated config
 
 ---
@@ -612,9 +613,26 @@ The chat assistant uses Sonnet 4.5, which is more expensive per token than Haiku
 
 | Scenario | Estimated cost |
 |----------|---------------|
-| Single reclassification (2-3 turns) | ~$0.01–0.03 |
-| Config change conversation (4-6 turns) | ~$0.03–0.08 |
-| 10 chat sessions per day (heavy use) | ~$0.10–0.50/day |
-| Typical usage (3-5 sessions per day) | ~$0.05–0.20/day |
+| Single reclassification (2-3 turns) | ~$0.01-0.03 |
+| Config change conversation (4-6 turns) | ~$0.03-0.08 |
+| 10 chat sessions per day (heavy use) | ~$0.10-0.50/day |
+| Typical usage (3-5 sessions per day) | ~$0.05-0.20/day |
 
-This is negligible relative to the daily triage cost (~$0.10–0.30/day for Haiku classification).
+This is negligible relative to the daily triage cost (~$0.10-0.30/day for Haiku classification).
+
+---
+
+## 11. Phase 1.5 and Phase 2 Integration
+
+### Phase 1.5 Changes
+
+- **`create_project_or_area` tool (Section 6.4):** Step 7 added -- when creating a new project or area, the tool also creates a taxonomy category via `graph_tasks.py`. This ensures compound categories (priority + action type + taxonomy) can be applied to emails classified into the new project/area.
+- **Config hot-reload:** When a new project/area is added via chat and the config hot-reload detects it, missing taxonomy categories are automatically created.
+
+### Phase 2 Additions (Not in Phase 1.5)
+
+The following chat features are deferred to Phase 2:
+
+- **`manage_category` tool:** A new chat tool allowing users to create, rename, or delete user-tier categories conversationally. Full tool schema in `10-native-task-integration.md` Phase 2 Additions section.
+- **AVAILABLE CATEGORIES in system prompt:** The chat system prompt (Section 5) will be extended with an `AVAILABLE CATEGORIES` block listing all framework, taxonomy, and user-tier categories. This helps the assistant suggest correct categories during reclassification.
+- **Category growth through learning:** When the learning-from-corrections system (Feature 2D) detects recurring user-applied categories, it can propose formalizing them via the chat assistant.

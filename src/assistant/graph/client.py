@@ -143,6 +143,7 @@ class GraphClient:
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
             "Accept": "application/json",
+            "Prefer": 'IdType="ImmutableId"',
         }
 
     def _make_url(self, endpoint: str) -> str:

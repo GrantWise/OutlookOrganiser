@@ -22,8 +22,13 @@ Build an AI-powered email management agent for Outlook using Microsoft Graph API
 | 6. Bootstrap & Dry-Run | ✅ Complete | 2026-02-06 | 2026-02-06 |
 | 7. Triage Engine & Web UI | ✅ Complete | 2026-02-06 | 2026-02-06 |
 | 8. Classification Chat Assistant | ✅ Complete | 2026-02-07 | 2026-02-07 |
+| **Phase 1.5: Native M365 Integration** | ✅ Complete | 2026-02-07 | 2026-02-08 |
+| 9. Permissions + Auth + Immutable IDs | ✅ Complete | 2026-02-07 | 2026-02-08 |
+| 10. graph_tasks.py + Category Bootstrap | ✅ Complete | 2026-02-07 | 2026-02-08 |
+| 11. Task Sync + Triage Integration | ✅ Complete | 2026-02-07 | 2026-02-08 |
 
 **Phase 1 Baseline:** 302 tests passing, 58% coverage (2026-02-07)
+**Phase 1.5 Baseline:** 365 tests passing (2026-02-08)
 
 Status: ⬜ Not Started | 🟡 In Progress | ✅ Complete | ❌ Blocked
 
@@ -676,27 +681,83 @@ python -m assistant triage --once --dry-run  # No suggestions created
 
 ---
 
-## Phase 2: Intelligence (Next)
+## Phase 1.5: Native Microsoft 365 Integration
 
-See `guides/PHASE_2_INTELLIGENCE.md` for detailed specifications.
+See `Reference/spec/10-native-task-integration.md` for detailed architecture decisions.
+
+**Goal:** Establish lean plumbing for To Do tasks, category management, and immutable message IDs — so Phase 2 features build on native M365 integration from the start.
 
 | # | Feature | Status |
 |---|---------|--------|
-| 2A | Delta Queries + Fast Polling (5-min intervals) | ⬜ Not Started |
-| 2D | Learning from Corrections | ⬜ Not Started |
-| 2G | Suggestion Queue Management (auto-expire + auto-approve) | ⬜ Not Started |
-| 2E | Sender Affinity Auto-Rules | ⬜ Not Started |
-| 2B | Waiting-For Tracker Enhancement | ⬜ Not Started |
-| 2C | Daily Digest Generation | ⬜ Not Started |
-| 2F | Auto-Rules Hygiene | ⬜ Not Started |
-| 2H | Stats & Accuracy Dashboard | ⬜ Not Started |
-| 2K | Confidence Calibration | ⬜ Not Started |
-| 2I | Sender Management Page | ⬜ Not Started |
-| 2M | Enhanced Graceful Degradation | ⬜ Not Started |
+| 1.5.1 | Permissions + auth (Tasks.ReadWrite, MailboxSettings.ReadWrite upgrade) | ✅ Complete |
+| 1.5.2 | Immutable ID migration (Prefer: IdType="ImmutableId" header) | ✅ Complete |
+| 1.5.3 | graph_tasks.py module (To Do CRUD, category management) | ✅ Complete |
+| 1.5.4 | Category bootstrap + cleanup (framework + taxonomy + orphan cleanup) | ✅ Complete |
+| 1.5.5 | task_sync table + store.py CRUD | ✅ Complete |
+| 1.5.6 | Config schema (IntegrationsConfig with TodoConfig) | ✅ Complete |
+| 1.5.7 | Triage engine hook (create To Do task + compound categories on approval) | ✅ Complete |
+| 1.5.8 | Chat tool extension (add_project_or_area creates taxonomy category) | ✅ Complete |
+| 1.5.9 | Config hot-reload (create categories for new areas) | ✅ Complete |
+| 1.5.10 | Tests (category bootstrap, task creation, immutable IDs) | ✅ Complete |
+| 1.5.11 | Documentation updates (all spec docs) | ✅ Complete |
+
+### Phase 1.5 Deliverables
+
+**New files:**
+- `src/assistant/graph/tasks.py` — TaskManager (To Do CRUD), CategoryManager (master category list), helpers (derive_taxonomy_name, build_task_from_classification)
+- `tests/test_graph_tasks.py` — 33 tests covering task/category operations
+- `tests/test_category_bootstrap.py` — 7 tests for bootstrap + orphan detection
+- `tests/test_immutable_ids.py` — 7 tests for ID migration edge cases
+- `tests/test_task_sync_store.py` — 16 tests for task_sync CRUD
+- `Reference/spec/10-native-task-integration.md` — Architecture decisions spec
+- `Reference/MicrosoftGraphAPITaskTracking.md` — Graph API research document
+
+**Key modifications:**
+- `config_schema.py` — Added IntegrationsConfig, TodoConfig, AgingConfig
+- `db/models.py` — Added task_sync table schema
+- `db/store.py` — 9 new methods (task_sync CRUD, immutable ID migration helpers)
+- `graph/client.py` — Added `Prefer: IdType="ImmutableId"` header
+- `web/app.py` — TaskManager/CategoryManager initialization, background migrations on startup, auto-bootstrap categories, fixed APScheduler `next_run_time=None` bug
+- `web/routes.py` — Compound categories (priority+action+taxonomy) on approval, To Do task creation, task_sync recording, Reference/Archive folders in correction dropdown
+- `engine/triage.py` — Category sync per-cycle, category_manager parameter
+- `chat/tools.py` — Area taxonomy category creation in add_project_or_area
+- `cli.py` — Immutable ID migration logic, category bootstrap command
+
+### Live Testing Fixes (2026-02-08)
+
+Issues found during live inbox testing and resolved:
+1. **APScheduler never fired** — `next_run_time=None` pauses the job permanently; changed to 60s delay after startup
+2. **403 on Tasks API** — Azure AD missing `Tasks.ReadWrite` permission + admin consent; config.yaml scopes updated
+3. **Reference folders missing from dropdown** — Added Reference subfolders, Archive, auto-rule folders to correction UI
+4. **Areas-only taxonomy** — Removed project-level categories (they accumulate unboundedly); only areas get taxonomy categories now. 38 stale categories cleaned up from Outlook.
+
+---
+
+## Phase 2: Intelligence
+
+See `guides/PHASE_2_INTELLIGENCE.md` for detailed specifications.
+
+**Prerequisites:** Phase 1 (Foundation/MVP) + Phase 1.5 (Native M365 Integration) fully implemented and tested.
+
+| # | Feature | Status | Notes |
+|---|---------|--------|-------|
+| 2A | Delta Queries + Fast Polling (5-min intervals) | ⬜ Not Started | |
+| 2D | Learning from Corrections | ⬜ Not Started | + category growth, manage_category chat tool, AVAILABLE CATEGORIES in prompts |
+| 2G | Suggestion Queue Management (auto-expire + auto-approve) | ⬜ Not Started | |
+| 2E | Sender Affinity Auto-Rules | ⬜ Not Started | |
+| 2B | Waiting-For Tracker Enhancement | ⬜ Not Started | + To Do sync, email flags, bidirectional task sync (builds on Phase 1.5) |
+| 2C | Daily Digest Generation | ⬜ Not Started | + calendar awareness, Calendars.Read permission (builds on Phase 1.5) |
+| 2F | Auto-Rules Hygiene | ⬜ Not Started | |
+| 2H | Stats & Accuracy Dashboard | ⬜ Not Started | |
+| 2K | Confidence Calibration | ⬜ Not Started | |
+| 2I | Sender Management Page | ⬜ Not Started | |
+| 2M | Enhanced Graceful Degradation | ⬜ Not Started | |
 
 **Removed from Phase 2:** Webhooks (replaced by delta polling), Token Cache Encryption (file permissions sufficient).
 
-## What's NOT in Phase 1 or 2 (Deferred)
+**Added to Phase 2 (deferred from Phase 1.5):** Email followUpFlag operations (2B), calendar awareness with Calendars.Read (2C), bidirectional task sync cycle (2B), manage_category chat tool (2D), AVAILABLE CATEGORIES in prompts (2D), category growth through learning (2D).
+
+## What's NOT in Phase 1, 1.5, or 2 (Deferred)
 
 | Feature | Target Phase |
 |---------|--------------|

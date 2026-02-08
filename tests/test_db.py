@@ -60,7 +60,7 @@ class TestDatabaseInitialization:
 
     @pytest.mark.asyncio
     async def test_init_database_creates_all_tables(self, db_path: Path) -> None:
-        """Test that all 7 tables are created."""
+        """Test that all 8 tables are created."""
         await init_database(db_path)
 
         async with aiosqlite.connect(db_path) as db:
@@ -75,6 +75,7 @@ class TestDatabaseInitialization:
             "sender_profiles",
             "llm_request_log",
             "action_log",
+            "task_sync",
         }
         assert expected_tables.issubset(tables)
 

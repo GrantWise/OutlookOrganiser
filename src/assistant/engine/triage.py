@@ -124,6 +124,7 @@ class TriageEngine:
         thread_manager: ThreadContextManager,
         sent_cache: SentItemsCache,
         config: AppConfig,
+        category_manager: Any | None = None,
     ):
         self._classifier = classifier
         self._store = store
@@ -133,6 +134,7 @@ class TriageEngine:
         self._thread_manager = thread_manager
         self._sent_cache = sent_cache
         self._config = config
+        self._category_manager = category_manager
         self._consecutive_failures = 0
         self._degraded_mode = False
 
@@ -148,6 +150,36 @@ class TriageEngine:
             config: New AppConfig instance
         """
         self._config = config
+
+    async def _sync_taxonomy_categories(self) -> None:
+        """Create missing taxonomy categories for new areas in config.
+
+        Called during each triage cycle when category_manager is available.
+        Only areas get taxonomy categories (projects are temporary).
+        Skips if bootstrap hasn't been run yet.
+        """
+        bootstrapped = await self._store.get_state("categories_bootstrapped")
+        if bootstrapped != "true":
+            return
+
+        try:
+            from assistant.graph.tasks import AREA_CATEGORY_COLOR
+
+            existing = self._category_manager.get_categories()
+            existing_names = {cat["displayName"] for cat in existing}
+            created = 0
+
+            # Only areas get taxonomy categories -- projects are temporary and
+            # would accumulate unboundedly in the master category list
+            for area in self._config.areas:
+                if area.name not in existing_names:
+                    self._category_manager.create_category(area.name, AREA_CATEGORY_COLOR)
+                    created += 1
+
+            if created > 0:
+                logger.info("taxonomy_categories_synced", created=created)
+        except (GraphAPIError, Exception) as e:
+            logger.warning("taxonomy_category_sync_failed", error=str(e))
 
     async def run_cycle(self) -> TriageCycleResult:
         """Execute a single triage cycle.
@@ -180,6 +212,10 @@ class TriageEngine:
         try:
             # 1. Refresh classifier system prompt (picks up config changes)
             await self._classifier.refresh_system_prompt()
+
+            # 1b. Sync taxonomy categories for any new projects/areas in config
+            if self._category_manager:
+                await self._sync_taxonomy_categories()
 
             # 2. Refresh sent items cache for reply state detection
             try:

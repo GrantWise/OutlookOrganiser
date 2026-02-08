@@ -21,7 +21,7 @@ import click
 from rich.console import Console
 
 from assistant.config import validate_config_file
-from assistant.core.logging import configure_logging
+from assistant.core.logging import configure_logging, get_logger
 
 if TYPE_CHECKING:
     import anthropic
@@ -33,8 +33,10 @@ if TYPE_CHECKING:
     from assistant.graph.client import GraphClient
     from assistant.graph.folders import FolderManager
     from assistant.graph.messages import MessageManager
+    from assistant.graph.tasks import CategoryManager, TaskManager
 
 console = Console()
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +51,8 @@ class CLIDeps:
     store: DatabaseStore
     anthropic_client: anthropic.Anthropic
     snippet_cleaner: SnippetCleaner
+    task_manager: TaskManager | None = None
+    category_manager: CategoryManager | None = None
 
 
 async def _init_cli_deps() -> CLIDeps:
@@ -68,6 +72,8 @@ async def _init_cli_deps() -> CLIDeps:
     from assistant.graph.client import GraphClient
     from assistant.graph.folders import FolderManager
     from assistant.graph.messages import MessageManager
+    from assistant.graph.tasks import CategoryManager as _CategoryManager
+    from assistant.graph.tasks import TaskManager as _TaskManager
 
     # 1. Load config
     try:
@@ -99,6 +105,8 @@ async def _init_cli_deps() -> CLIDeps:
     graph_client = GraphClient(auth)
     message_manager = MessageManager(graph_client)
     folder_manager = FolderManager(graph_client)
+    task_manager = _TaskManager(graph_client)
+    category_manager = _CategoryManager(graph_client)
 
     # 4. Initialize database
     db_path = Path("data/assistant.db")
@@ -119,6 +127,8 @@ async def _init_cli_deps() -> CLIDeps:
         store=store,
         anthropic_client=anthropic_client,
         snippet_cleaner=snippet_cleaner,
+        task_manager=task_manager,
+        category_manager=category_manager,
     )
 
 
@@ -427,6 +437,7 @@ async def _run_triage_once(is_dry_run: bool) -> None:
         thread_manager=thread_manager,
         sent_cache=sent_cache,
         config=deps.config,
+        category_manager=deps.category_manager,
     )
 
     if is_dry_run:
@@ -483,6 +494,7 @@ async def _run_triage_backlog(days: int) -> None:
         thread_manager=thread_manager,
         sent_cache=sent_cache,
         config=deps.config,
+        category_manager=deps.category_manager,
     )
 
     console.print(
@@ -547,6 +559,7 @@ async def _run_triage_continuous(is_dry_run: bool) -> None:
         thread_manager=thread_manager,
         sent_cache=sent_cache,
         config=deps.config,
+        category_manager=deps.category_manager,
     )
 
     async def run_cycle():
@@ -581,6 +594,225 @@ async def _run_triage_continuous(is_dry_run: bool) -> None:
     await stop_event.wait()
 
     scheduler.shutdown(wait=False)
+
+
+@cli.command("bootstrap-categories")
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Re-run bootstrap even if already completed",
+)
+def bootstrap_categories(force: bool) -> None:
+    """Bootstrap Outlook master categories (framework + taxonomy).
+
+    Creates the 10 framework categories (priorities + action types) and
+    taxonomy categories (one per project/area in config). Runs interactive
+    cleanup of orphaned categories on first run.
+    """
+    try:
+        asyncio.run(_run_bootstrap_categories(force))
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Cancelled.[/yellow]")
+        sys.exit(130)
+    except SystemExit:
+        raise
+    except Exception as e:
+        console.print(f"\n[red]Error:[/red] {e}")
+        sys.exit(1)
+
+
+async def _run_bootstrap_categories(force: bool) -> None:
+    """Async implementation of bootstrap-categories command."""
+    from assistant.graph.tasks import (
+        AREA_CATEGORY_COLOR,
+        FRAMEWORK_CATEGORIES,
+    )
+
+    deps = await _init_cli_deps()
+
+    if deps.category_manager is None:
+        console.print("[red]Error:[/red] Category manager not available (auth failed?).")
+        sys.exit(1)
+
+    # Check if already bootstrapped
+    already_done = await deps.store.get_state("categories_bootstrapped")
+    if already_done == "true" and not force:
+        console.print("[yellow]Categories already bootstrapped.[/yellow] Use --force to re-run.")
+        return
+
+    console.print("[bold]Bootstrapping Outlook master categories...[/bold]\n")
+
+    # Fetch existing categories
+    existing = deps.category_manager.get_categories()
+    existing_names = {cat["displayName"] for cat in existing}
+
+    created_count = 0
+    skipped_count = 0
+
+    # 1. Framework categories (10 total)
+    console.print("[cyan]Framework categories:[/cyan]")
+    for name, color in FRAMEWORK_CATEGORIES.items():
+        if name in existing_names:
+            console.print(f"  [dim]✓ {name} (exists, color preserved)[/dim]")
+            skipped_count += 1
+        else:
+            deps.category_manager.create_category(name, color)
+            console.print(f"  [green]+ {name}[/green] ({color})")
+            created_count += 1
+
+    # 2. Area taxonomy categories (projects excluded -- they're temporary
+    # and the folder hierarchy already conveys the project)
+    console.print("\n[cyan]Area taxonomy categories:[/cyan]")
+    for area in deps.config.areas:
+        if area.name in existing_names:
+            console.print(f"  [dim]✓ {area.name} (exists)[/dim]")
+            skipped_count += 1
+        else:
+            deps.category_manager.create_category(area.name, AREA_CATEGORY_COLOR)
+            console.print(f"  [green]+ {area.name}[/green] (area)")
+            created_count += 1
+
+    console.print(
+        f"\n[bold]Summary:[/bold] {created_count} created, {skipped_count} already existed"
+    )
+
+    # 3. Interactive cleanup of orphaned categories
+    # Managed = framework categories + area taxonomy (not projects)
+    managed_names = set(FRAMEWORK_CATEGORIES.keys())
+    for area in deps.config.areas:
+        managed_names.add(area.name)
+
+    # Re-fetch after creates to get full list
+    all_categories = deps.category_manager.get_categories()
+    orphans = [cat for cat in all_categories if cat["displayName"] not in managed_names]
+
+    if orphans:
+        console.print(f"\n[yellow]Found {len(orphans)} unmanaged categories:[/yellow]")
+        for i, cat in enumerate(orphans, 1):
+            console.print(f"  {i}. {cat['displayName']} ({cat.get('color', 'none')})")
+
+        choice = click.prompt(
+            "\nDelete these categories? (y=all, n=skip, or comma-separated numbers)",
+            default="n",
+        )
+
+        if choice.lower() == "y":
+            for cat in orphans:
+                deps.category_manager.delete_category(cat["id"])
+                console.print(f"  [red]- {cat['displayName']}[/red]")
+            console.print(f"  Deleted {len(orphans)} orphaned categories.")
+        elif choice.lower() != "n":
+            # Parse comma-separated indices
+            try:
+                indices = [int(x.strip()) for x in choice.split(",")]
+                for idx in indices:
+                    if 1 <= idx <= len(orphans):
+                        cat = orphans[idx - 1]
+                        deps.category_manager.delete_category(cat["id"])
+                        console.print(f"  [red]- {cat['displayName']}[/red]")
+            except ValueError:
+                console.print("[yellow]Invalid selection, skipping cleanup.[/yellow]")
+    else:
+        console.print("\n[dim]No orphaned categories found.[/dim]")
+
+    # Mark as bootstrapped
+    await deps.store.set_state("categories_bootstrapped", "true")
+    console.print("\n[green]✓ Category bootstrap complete.[/green]")
+
+
+@cli.command("migrate-immutable-ids")
+def migrate_immutable_ids() -> None:
+    """Run the one-time mutable-to-immutable ID migration.
+
+    Fetches each stored email ID with the Prefer: IdType="ImmutableId" header
+    and updates the database if the ID changed.
+    """
+    try:
+        asyncio.run(_run_migrate_immutable_ids())
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Cancelled.[/yellow]")
+        sys.exit(130)
+    except SystemExit:
+        raise
+    except Exception as e:
+        console.print(f"\n[red]Error:[/red] {e}")
+        sys.exit(1)
+
+
+async def _run_migrate_immutable_ids() -> None:
+    """Async implementation of immutable ID migration."""
+    deps = await _init_cli_deps()
+    await _migrate_to_immutable_ids(deps.store, deps.graph_client, console)
+
+
+async def _migrate_to_immutable_ids(store, graph_client, output_console=None) -> None:
+    """Migrate stored email IDs from mutable to immutable format.
+
+    Called from both CLI command and serve lifespan.
+
+    Args:
+        store: DatabaseStore instance
+        graph_client: GraphClient instance (already sends Prefer header)
+        output_console: Optional Rich Console for CLI output
+    """
+    from assistant.core.errors import GraphAPIError as _GraphAPIError
+
+    migrated_key = await store.get_state("immutable_ids_migrated")
+    if migrated_key == "true":
+        if output_console:
+            output_console.print("[dim]Immutable IDs already migrated.[/dim]")
+        return
+
+    all_ids = await store.get_all_email_ids()
+    if not all_ids:
+        await store.set_state("immutable_ids_migrated", "true")
+        if output_console:
+            output_console.print("[dim]No emails to migrate.[/dim]")
+        return
+
+    if output_console:
+        output_console.print(
+            f"[bold]Migrating {len(all_ids)} email IDs to immutable format...[/bold]"
+        )
+
+    migrated = 0
+    skipped = 0
+    not_found = 0
+
+    for old_id in all_ids:
+        try:
+            # Fetch message with immutable ID header (already in _get_headers)
+            msg = graph_client.get(
+                f"/me/messages/{old_id}",
+                params={"$select": "id"},
+            )
+            new_id = msg.get("id", old_id)
+            if new_id != old_id:
+                await store.update_email_id(old_id, new_id)
+                migrated += 1
+            else:
+                skipped += 1
+        except _GraphAPIError as e:
+            if e.status_code == 404:
+                not_found += 1
+                logger.warning(
+                    "immutable_id_migration_404",
+                    old_id=old_id[:20] + "...",
+                )
+            else:
+                logger.warning(
+                    "immutable_id_migration_error",
+                    old_id=old_id[:20] + "...",
+                    error=str(e),
+                )
+                skipped += 1
+
+    await store.set_state("immutable_ids_migrated", "true")
+
+    summary = f"Migrated {migrated} IDs, {skipped} unchanged, {not_found} not found (deleted)"
+    logger.info("immutable_id_migration_complete", summary=summary)
+    if output_console:
+        output_console.print(f"[green]✓ {summary}[/green]")
 
 
 def main() -> None:

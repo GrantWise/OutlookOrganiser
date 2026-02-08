@@ -11,17 +11,17 @@ The agent uses folders exclusively for organizational taxonomy. Action state (ne
 ```
 Inbox/                          # Untriaged incoming mail (standard)
 Projects/                       # Active projects with defined outcomes
-  Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ {project-name}/           # One subfolder per active project
+  Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ {project-name}/           # One subfolder per active project
   Ã¢â€â€Ã¢â€â‚¬Ã¢â€â‚¬ .../
 Areas/                          # Ongoing responsibilities (no end date)
-  Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ {area-name}/              # One subfolder per area
+  Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ {area-name}/              # One subfolder per area
   Ã¢â€â€Ã¢â€â‚¬Ã¢â€â‚¬ .../
 Reference/                      # Useful information, no action needed
-  Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ Newsletters/
-  Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ Industry/
+  Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ Newsletters/
+  Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ Industry/
   Ã¢â€â€Ã¢â€â‚¬Ã¢â€â‚¬ Vendor Updates/
 Archive/                        # Completed projects, old threads
-  Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ {completed-project-name}/
+  Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ {completed-project-name}/
   Ã¢â€â€Ã¢â€â‚¬Ã¢â€â‚¬ .../
 ```
 
@@ -59,6 +59,34 @@ Outlook categories provide cross-cutting classification that overlays the folder
 | `FYI Only` | Informational, no action required |
 | `Scheduled` | Action planned for a specific date |
 | `Review` | Needs user review/approval (document, PR, proposal) |
+
+**Category management (Phase 1.5):**
+
+Categories are no longer a static list defined only in documentation. The agent programmatically manages categories in the Outlook master category list via `/me/outlook/masterCategories` (requires `MailboxSettings.ReadWrite`).
+
+Categories are organized in three tiers:
+- **Framework categories** (the 4 priority + 6 action type categories listed above) -- created automatically on first run, never deleted
+- **Taxonomy categories** -- one category per project and area in `config.yaml`, created during bootstrap and when new projects/areas are added. Applied to emails and To Do tasks alongside priority categories for cross-app visibility.
+- **User categories** (Phase 2) -- custom categories created through the classification chat or detected from user behavior. Proposed by the agent, confirmed by the user.
+
+The same categories are applied consistently to emails and To Do tasks. This provides unified color-coded labeling across the CEO's Microsoft 365 experience.
+
+**Category-to-Color mapping:**
+
+| Category | Preset | Color |
+|----------|--------|-------|
+| `P1 - Urgent Important` | preset0 | Red |
+| `P2 - Important` | preset1 | Orange |
+| `P3 - Urgent Low` | preset7 | Blue |
+| `P4 - Low` | preset14 | DarkSteel |
+| `Needs Reply` | preset3 | Yellow |
+| `Waiting For` | preset8 | Teal |
+| `Delegated` | preset9 | Olive |
+| `Review` | preset5 | Purple |
+| `FYI Only` | preset15 | Steel |
+| `Scheduled` | preset10 | Green |
+
+Taxonomy categories (projects/areas) use presets in a rotating sequence from the remaining presets. The agent only sets colors on categories it creates fresh -- if a category already exists in the master list (even from a prior attempt), its existing color is preserved.
 
 ---
 
@@ -142,6 +170,21 @@ CREATE TABLE waiting_for (
     resolved_at DATETIME
 );
 
+-- Map emails to To Do tasks (Phase 1.5)
+CREATE TABLE task_sync (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email_id TEXT REFERENCES emails(id),
+    todo_task_id TEXT NOT NULL,             -- Graph API task ID
+    todo_list_id TEXT NOT NULL,             -- Graph API task list ID
+    task_type TEXT NOT NULL,                -- e.g., 'waiting_for', 'needs_reply', 'review', 'delegated'
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    synced_at DATETIME,                    -- Last time sync status was checked
+    status TEXT DEFAULT 'active'           -- 'active', 'completed', 'deleted'
+);
+
+CREATE INDEX idx_task_sync_email ON task_sync(email_id);
+CREATE INDEX idx_task_sync_todo ON task_sync(todo_task_id);
+
 -- Agent state persistence (cursors, tokens, counters)
 CREATE TABLE agent_state (
     key TEXT PRIMARY KEY,
@@ -150,7 +193,9 @@ CREATE TABLE agent_state (
 );
 -- Keys: 'last_processed_timestamp', 'delta_token', 'last_bootstrap_run',
 --        'last_digest_run', 'authenticated_user_email',
---        'classification_preferences', 'config_schema_version'
+--        'classification_preferences', 'config_schema_version',
+--        'todo_list_id', 'todo_enabled', 'categories_bootstrapped',
+--        'immutable_ids_migrated'
 --
 -- 'classification_preferences': Natural language text describing learned
 --   classification patterns derived from user corrections. Updated after
@@ -242,12 +287,12 @@ The config.yaml is the single source of truth for the entire system. It must be 
 The config.yaml includes a `schema_version` integer at the top level. When the code expects a newer schema version than the file contains:
 
 1. On startup, compare `schema_version` in the file against `CURRENT_SCHEMA_VERSION` in code
-2. If the file version is older, apply migrations sequentially (v1→v2, v2→v3, etc.)
-3. Migrations add new fields with sensible defaults — never remove or rename existing fields
+2. If the file version is older, apply migrations sequentially (v1->v2, v2->v3, etc.)
+3. Migrations add new fields with sensible defaults -- never remove or rename existing fields
 4. Write the migrated config back to disk (with backup: `config.yaml.bak.{timestamp}`)
 5. Log the migration at INFO level
 
-**Design rationale:** As the project evolves through build phases, new config fields will be added (e.g., `digest.delivery` in Phase 2, `auto_mode.confidence_threshold` in Phase 3). Without versioning, users upgrading the agent would face opaque Pydantic validation errors. All new fields should be added as optional with defaults so that an un-migrated config still loads — the migration just makes the defaults explicit in the file.
+**Design rationale:** As the project evolves through build phases, new config fields will be added (e.g., `digest.delivery` in Phase 2, `auto_mode.confidence_threshold` in Phase 3). Without versioning, users upgrading the agent would face opaque Pydantic validation errors. All new fields should be added as optional with defaults so that an un-migrated config still loads -- the migration just makes the defaults explicit in the file.
 
 **CLI validation command:**
 ```bash
@@ -272,8 +317,10 @@ auth:
   scopes:
     - "Mail.ReadWrite"
     - "Mail.Send"
-    - "MailboxSettings.Read"
+    - "MailboxSettings.ReadWrite"    # UPGRADED from Read -- Phase 1.5
     - "User.Read"
+    - "Tasks.ReadWrite"              # NEW -- Phase 1.5
+    # Calendars.Read added in Phase 2
   token_cache_path: "/app/data/token_cache.json"
 
 # -- Identity --
@@ -431,7 +478,7 @@ digest:
 
 # -- Auto-rules hygiene --
 # Ref: Inbox Zero reports problems with auto-generated rules accumulating over time
-#   https://github.com/elie222/inbox-zero (ARCHITECTURE.md — rule management lessons)
+#   https://github.com/elie222/inbox-zero (ARCHITECTURE.md -- rule management lessons)
 #   Without limits, hundreds of rules can accumulate with conflicts.
 auto_rules_hygiene:
   max_rules: 100                 # Warn user when auto_rules exceeds this count
@@ -443,6 +490,18 @@ suggestion_queue:
   expire_after_days: 14          # Auto-expire pending suggestions older than N days
   auto_approve_confidence: 0.95  # Auto-approve suggestions above this threshold after 48h (Phase 2)
   auto_approve_delay_hours: 48   # Wait this long before auto-approving high-confidence suggestions
+
+# -- Integrations (Phase 1.5+) --
+integrations:
+  todo:
+    enabled: true                    # Create To Do tasks for actionable emails
+    list_name: "AI Assistant"        # Name of the To Do list to use (created if missing)
+    create_for_action_types:         # Which action types generate tasks
+      - "Waiting For"
+      - "Needs Reply"
+      - "Review"
+      - "Delegated"
+  # email_flags and calendar sections added in Phase 2 -- see PHASE_2_INTELLIGENCE.md
 
 # -- LLM request logging --
 llm_logging:

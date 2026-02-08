@@ -160,6 +160,10 @@ Full coding standards and review checklist: `CODING_STANDARDS.md`
 | `Reference/spec/05-graph-api.md` | Graph API endpoints, pagination, rate limits, delta queries |
 | `Reference/spec/06-safety-and-testing.md` | Autonomy boundaries, data privacy, testing strategy |
 | `Reference/spec/07-setup-guide.md` | Azure AD registration, Docker, dependencies |
+| `Reference/spec/08-classification-chat.md` | Chat assistant for reclassification, config editing, rule creation |
+| `Reference/spec/09-architecture-decisions.md` | Infrastructure decisions: Docker-local vs Azure, polling vs webhooks |
+| `Reference/spec/10-native-task-integration.md` | Native M365 integration: To Do tasks, categories, immutable IDs |
+| `guides/PHASE_2_INTELLIGENCE.md` | Detailed Phase 2 implementation guide with code examples |
 | `PRINCIPLES.md` | Toyota + Unix philosophy deep dive |
 | `CODING_STANDARDS.md` | Detailed coding standards and review checklist |
 | `IMPLEMENTATION_PLAN.md` | Build phases and progress tracker |

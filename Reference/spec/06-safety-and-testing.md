@@ -9,7 +9,9 @@
 **Agent MAY do autonomously:**
 - Read any email in the mailbox (Inbox and Sent Items)
 - Create folders in Outlook (following the taxonomy)
-- Create Outlook categories
+- Create and manage categories in the Outlook master category list
+- Create To Do tasks in the "AI Assistant" task list (after suggestion approval)
+- Read To Do task status for sync purposes
 - Write to local SQLite database
 - Generate suggestions and store them
 - Send digest to stdout/file
@@ -18,6 +20,8 @@
 **Agent MUST get user approval for:**
 - Moving any email between folders (in suggest mode)
 - Applying categories to emails (in suggest mode)
+- Deleting orphaned categories during cleanup (interactive confirmation)
+- Creating user-tier categories (Phase 2 -- proposed by agent, confirmed by user via chat)
 - Deleting any email (never Ã¢â‚¬â€ the agent does not delete)
 - Sending any email on behalf of the user
 - Modifying email content
@@ -30,6 +34,10 @@
 - Access other users' mailboxes
 - Store full email bodies (only cleaned snippets)
 - Send email content to any service other than Anthropic's Claude API
+- Delete framework categories (P1-P4, action types)
+- Modify or delete tasks in any To Do list other than "AI Assistant"
+- Change the color of an existing category (only set colors on newly created categories)
+- Read other users' task lists or calendars
 
 ---
 
@@ -43,7 +51,7 @@
 - **LLM request log:** Full prompts and responses are logged locally in the `llm_request_log` table for debugging. These contain email snippets. The log is automatically pruned after `llm_logging.retention_days` (default: 30 days). The log never leaves the local machine.
 
 > **Ref:** Aomail (https://github.com/aomail-ai/aomail-app) explicitly states "no AI training on
-> your data" and uses stateless API calls — the same approach we use. Our LLM request log is
+> your data" and uses stateless API calls -- the same approach we use. Our LLM request log is
 > local-only and exists purely for debugging and prompt iteration.
 
 ---
@@ -73,7 +81,7 @@ Every action the agent takes is logged in `action_log` with:
 - Auto-rules matching against sample emails
 - Auto-rules conflict detection: verify overlapping sender/subject patterns are flagged
 - Config parsing and Pydantic validation (valid configs, invalid configs, edge cases)
-- Config schema migration: verify v1→v2 migration adds new fields with defaults
+- Config schema migration: verify v1->v2 migration adds new fields with defaults
 - Database operations (CRUD for all tables including agent_state, sender_profiles, llm_request_log)
 - Prompt template rendering (including thread context formatting, sender history, learned preferences, sender profile)
 - Snippet cleaning pipeline (signatures, disclaimers, HTML stripping)
@@ -89,6 +97,19 @@ Every action the agent takes is logged in `action_log` with:
 - LLM log retention: verify entries older than retention_days are pruned
 - Suggestion queue expiry: verify pending suggestions older than expire_after_days are auto-expired
 - Bootstrap idempotency: verify re-run prompts for confirmation, verify --force flag skips prompts
+- Task field mapping: verify priority->importance, action_type->status mapping
+- Task title generation: verify truncation to 255 chars, proper formatting
+- Immutable ID migration: verify mutable->immutable ID conversion logic
+- task_sync CRUD: verify create, read, update, delete through store.py
+- Config backward compatibility: verify missing integrations section defaults to disabled
+- Category bootstrap: verify all 10 framework categories are created with correct colors
+- Category bootstrap: verify taxonomy categories are created for each project/area in config
+- Category bootstrap: verify existing categories are not duplicated
+- Category bootstrap: verify existing category colors are never changed
+- Category cleanup: verify orphaned categories are identified correctly
+- Category application: verify compound category array (priority + action + taxonomy) is applied to emails
+- Category application: verify tasks get priority + taxonomy only (not action type)
+- Category growth: verify new project in config triggers category creation on hot-reload
 
 ### Integration Tests
 - Claude API classification with sample emails (uses real API, tool use)
@@ -97,12 +118,18 @@ Every action the agent takes is logged in `action_log` with:
 - Claude API classification with learned preferences in prompt (verify preferences influence output)
 - Graph API operations against test mailbox (requires test account)
 - Graph API thread context fetching (verify conversationId filter and result ordering)
-- Graph API delta query lifecycle: initial sync → delta token → incremental sync → 410 Gone → recovery
+- Graph API delta query lifecycle: initial sync -> delta token -> incremental sync -> 410 Gone -> recovery
 - Bootstrap two-pass flow with mock email data
 - Bootstrap sender profile population: verify profiles are created from bootstrap analysis
 - Full triage cycle with thread inheritance: process 3 emails in the same thread, verify first goes to Claude, second inherits folder
 - Full triage cycle in degraded mode: simulate Claude API failure, verify auto-rules-only processing
 - Triage dry-run mode: verify no suggestions or state changes are created
+- Graph API To Do: create task list, create task with linkedResource, read task, update status, delete task
+- Graph API categories: read master list, create category, delete category
+- Category bootstrap end-to-end: clean slate -> bootstrap -> verify all categories exist with correct colors
+- Category sync with config: add new project to config -> hot-reload -> verify category created
+- End-to-end: classify email -> approve -> verify categories on email, task created with matching categories
+- Immutable ID: fetch message with Prefer header -> verify ID format -> move message -> verify ID unchanged
 
 ### Test Fixtures
 - `fixtures/sample_emails.json`: 50+ representative emails covering all project/area types, newsletters, automated notifications, personal email, and edge cases

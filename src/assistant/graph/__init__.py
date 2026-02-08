@@ -5,6 +5,8 @@ Provides a robust client for interacting with Microsoft Graph API including:
 - Folder operations (list, create, find by path)
 - Message operations (list, move, set categories)
 - Sent items cache for reply state detection
+- To Do task operations (create, update, delete, list)
+- Outlook master category management (read, create, delete)
 
 Usage:
     from assistant.auth import GraphAuth
@@ -24,10 +26,13 @@ Usage:
 from assistant.graph.client import GraphClient
 from assistant.graph.folders import FolderManager
 from assistant.graph.messages import MessageManager, SentItemsCache
+from assistant.graph.tasks import CategoryManager, TaskManager
 
 __all__ = [
+    "CategoryManager",
     "GraphClient",
     "FolderManager",
     "MessageManager",
     "SentItemsCache",
+    "TaskManager",
 ]

@@ -30,8 +30,9 @@ class AuthConfig(BaseModel):
         default=[
             "Mail.ReadWrite",
             "Mail.Send",
-            "MailboxSettings.Read",
+            "MailboxSettings.ReadWrite",
             "User.Read",
+            "Tasks.ReadWrite",
         ],
         description="Microsoft Graph API permission scopes",
     )
@@ -382,6 +383,29 @@ class SuggestionQueueConfig(BaseModel):
     )
 
 
+class TodoConfig(BaseModel):
+    """Microsoft To Do integration configuration."""
+
+    enabled: bool = Field(
+        default=True,
+        description="Create To Do tasks for actionable emails on approval",
+    )
+    list_name: str = Field(
+        default="AI Assistant",
+        description="Name of the To Do list to use (created if missing)",
+    )
+    create_for_action_types: list[str] = Field(
+        default=["Waiting For", "Needs Reply", "Review", "Delegated"],
+        description="Which action types generate To Do tasks",
+    )
+
+
+class IntegrationsConfig(BaseModel):
+    """Microsoft 365 native integration configuration (Phase 1.5)."""
+
+    todo: TodoConfig = Field(default_factory=TodoConfig)
+
+
 class LLMLoggingConfig(BaseModel):
     """LLM request logging configuration."""
 
@@ -452,6 +476,7 @@ class AppConfig(BaseModel):
     auto_rules_hygiene: AutoRulesHygieneConfig = Field(default_factory=AutoRulesHygieneConfig)
     suggestion_queue: SuggestionQueueConfig = Field(default_factory=SuggestionQueueConfig)
     llm_logging: LLMLoggingConfig = Field(default_factory=LLMLoggingConfig)
+    integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
 
     # Optional: user email override (normally auto-detected from Graph API)
     user_email: str | None = Field(

@@ -17,6 +17,9 @@
 | `05-graph-api.md` | Microsoft Graph endpoints, pagination, rate limits, delta queries, reply state detection | Implementing or debugging Graph API integration |
 | `06-safety-and-testing.md` | Autonomy boundaries, data privacy, audit trail, rollback, testing strategy | Implementing safety checks or writing tests |
 | `07-setup-guide.md` | Azure AD registration, Docker config, Dockerfile, docker-compose, dependencies, .env, troubleshooting | Onboarding, infrastructure, or deployment |
+| `08-classification-chat.md` | Chat assistant for reclassification, config refinement, rule creation from Review UI | Implementing the chat panel, chat tools, or config write logic |
+| `09-architecture-decisions.md` | Infrastructure decisions: Docker-local vs Azure, webhook removal, delta query polling strategy | Evaluating deployment architecture or Phase 4 migration |
+| `10-native-task-integration.md` | Phase 1.5 To Do integration, category management, hybrid architecture | Implementing task creation, category bootstrap, or native M365 integration features |
 
 ---
 
@@ -47,27 +50,27 @@ A CEO managing a 50-person software company with 350+ manufacturing customers re
 ### System Components
 
 ```
-Ã¢â€Å’Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€Â
+Ã¢â€Å'Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€Â
 Ã¢â€â€š                    Docker Container                       Ã¢â€â€š
 Ã¢â€â€š                                                          Ã¢â€â€š
-Ã¢â€â€š  Ã¢â€Å’Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€Â   Ã¢â€Å’Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€Â   Ã¢â€Å’Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€Â          Ã¢â€â€š
-Ã¢â€â€š  Ã¢â€â€š SchedulerÃ¢â€â€šÃ¢â€â‚¬Ã¢â€â‚¬Ã¢â€“Â¶Ã¢â€â€š  Triage  Ã¢â€â€šÃ¢â€â‚¬Ã¢â€â‚¬Ã¢â€“Â¶Ã¢â€â€š  Suggestion  Ã¢â€â€š          Ã¢â€â€š
+Ã¢â€â€š  Ã¢â€Å'Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€Â   Ã¢â€Å'Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€Â   Ã¢â€Å'Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€Â          Ã¢â€â€š
+Ã¢â€â€š  Ã¢â€â€š SchedulerÃ¢â€â€šÃ¢â€â‚¬Ã¢â€â‚¬Ã¢â€"Â¶Ã¢â€â€š  Triage  Ã¢â€â€šÃ¢â€â‚¬Ã¢â€â‚¬Ã¢â€"Â¶Ã¢â€â€š  Suggestion  Ã¢â€â€š          Ã¢â€â€š
 Ã¢â€â€š  Ã¢â€â€š (APSched)Ã¢â€â€š   Ã¢â€â€š  Engine  Ã¢â€â€š   Ã¢â€â€š    Store     Ã¢â€â€š          Ã¢â€â€š
 Ã¢â€â€š  Ã¢â€â€Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€Ëœ   Ã¢â€â€Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€Â¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€Ëœ   Ã¢â€â€š  (SQLite)    Ã¢â€â€š          Ã¢â€â€š
 Ã¢â€â€š                      Ã¢â€â€š         Ã¢â€â€Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€Â¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€Ëœ          Ã¢â€â€š
-Ã¢â€â€š                      Ã¢â€“Â¼                Ã¢â€â€š                  Ã¢â€â€š
-Ã¢â€â€š              Ã¢â€Å’Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€Â         Ã¢â€â€š                  Ã¢â€â€š
+Ã¢â€â€š                      Ã¢â€"Â¼                Ã¢â€â€š                  Ã¢â€â€š
+Ã¢â€â€š              Ã¢â€Å'Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€Â         Ã¢â€â€š                  Ã¢â€â€š
 Ã¢â€â€š              Ã¢â€â€š Claude API   Ã¢â€â€š         Ã¢â€â€š                  Ã¢â€â€š
 Ã¢â€â€š              Ã¢â€â€š (Classifier) Ã¢â€â€š         Ã¢â€â€š                  Ã¢â€â€š
 Ã¢â€â€š              Ã¢â€â€Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€Ëœ         Ã¢â€â€š                  Ã¢â€â€š
 Ã¢â€â€š                      Ã¢â€â€š                Ã¢â€â€š                  Ã¢â€â€š
-Ã¢â€â€š                      Ã¢â€“Â¼                Ã¢â€“Â¼                  Ã¢â€â€š
-Ã¢â€â€š              Ã¢â€Å’Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€Â  Ã¢â€Å’Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€Â   Ã¢â€â€š
-Ã¢â€â€š              Ã¢â€â€š MS Graph API Ã¢â€â€šÃ¢â€”â‚¬Ã¢â€“Â¶Ã¢â€â€š  Review Interface  Ã¢â€â€š   Ã¢â€â€š
+Ã¢â€â€š                      Ã¢â€"Â¼                Ã¢â€"Â¼                  Ã¢â€â€š
+Ã¢â€â€š              Ã¢â€Å'Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€Â  Ã¢â€Å'Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€Â   Ã¢â€â€š
+Ã¢â€â€š              Ã¢â€â€š MS Graph API Ã¢â€â€šÃ¢â€"â‚¬Ã¢â€"Â¶Ã¢â€â€š  Review Interface  Ã¢â€â€š   Ã¢â€â€š
 Ã¢â€â€š              Ã¢â€â€š  (Outlook)   Ã¢â€â€š  Ã¢â€â€š  (FastAPI + HTML)  Ã¢â€â€š   Ã¢â€â€š
 Ã¢â€â€š              Ã¢â€â€Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€Ëœ  Ã¢â€â€Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€Ëœ   Ã¢â€â€š
-Ã¢â€â€š                                  Ã¢â€“Â²  reads suggestions   Ã¢â€â€š
-Ã¢â€â€š  Ã¢â€Å’Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€Â                Ã¢â€â€š  writes approvals    Ã¢â€â€š
+Ã¢â€â€š                                  Ã¢â€"Â²  reads suggestions   Ã¢â€â€š
+Ã¢â€â€š  Ã¢â€Å'Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€Â                Ã¢â€â€š  writes approvals    Ã¢â€â€š
 Ã¢â€â€š  Ã¢â€â€š  Bootstrap   Ã¢â€â€š                Ã¢â€â€š  executes moves      Ã¢â€â€š
 Ã¢â€â€š  Ã¢â€â€š  Scanner     Ã¢â€â€š                Ã¢â€â€š  via Graph API       Ã¢â€â€š
 Ã¢â€â€š  Ã¢â€â€Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€Ëœ                                       Ã¢â€â€š
@@ -139,7 +142,7 @@ The agent uses `structlog` for structured JSON logging to stdout. Docker capture
 
 The agent uses Microsoft's **device code flow** for OAuth2. On first run, it prints a URL and code to the console. User authenticates in a browser. Tokens are cached and auto-refreshed. Full details in `07-setup-guide.md`.
 
-Required Graph API permissions (delegated): `Mail.ReadWrite`, `Mail.Send`, `MailboxSettings.Read`, `User.Read`.
+Required Graph API permissions (delegated): `Mail.ReadWrite`, `Mail.Send`, `MailboxSettings.ReadWrite`, `User.Read`, `Tasks.ReadWrite`. See `07-setup-guide.md` for the full permissions table including Phase 2 additions.
 
 ---
 
@@ -147,70 +150,70 @@ Required Graph API permissions (delegated): `Mail.ReadWrite`, `Mail.Send`, `Mail
 
 ```
 outlook-ai-assistant/
-Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ docker-compose.yaml
-Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ Dockerfile
-Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ pyproject.toml
-Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ uv.lock                                # Lockfile Ã¢â‚¬â€ committed, deterministic builds
-Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ README.md
-Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ .gitignore
-Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ .env.example
-Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ config/
-Ã¢â€â€š   Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ config.yaml.example
+Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ docker-compose.yaml
+Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ Dockerfile
+Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ pyproject.toml
+Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ uv.lock                                # Lockfile Ã¢â‚¬â€ committed, deterministic builds
+Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ README.md
+Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ .gitignore
+Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ .env.example
+Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ config/
+Ã¢â€â€š   Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ config.yaml.example
 Ã¢â€â€š   Ã¢â€â€Ã¢â€â‚¬Ã¢â€â‚¬ config.yaml                        # User config (gitignored)
-Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ src/
+Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ src/
 Ã¢â€â€š   Ã¢â€â€Ã¢â€â‚¬Ã¢â€â‚¬ assistant/
-Ã¢â€â€š       Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ __init__.py
-Ã¢â€â€š       Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ __main__.py                    # CLI entry point
-Ã¢â€â€š       Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ cli.py                         # Click CLI: bootstrap, dry-run, triage, serve, validate-config
-Ã¢â€â€š       Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ config.py                      # Config loader with Pydantic validation + hot-reload
-Ã¢â€â€š       Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ config_schema.py               # Pydantic models for config.yaml structure
-Ã¢â€â€š       Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ auth/
-Ã¢â€â€š       Ã¢â€â€š   Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ __init__.py
+Ã¢â€â€š       Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ __init__.py
+Ã¢â€â€š       Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ __main__.py                    # CLI entry point
+Ã¢â€â€š       Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ cli.py                         # Click CLI: bootstrap, dry-run, triage, serve, validate-config
+Ã¢â€â€š       Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ config.py                      # Config loader with Pydantic validation + hot-reload
+Ã¢â€â€š       Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ config_schema.py               # Pydantic models for config.yaml structure
+Ã¢â€â€š       Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ auth/
+Ã¢â€â€š       Ã¢â€â€š   Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ __init__.py
 Ã¢â€â€š       Ã¢â€â€š   Ã¢â€â€Ã¢â€â‚¬Ã¢â€â‚¬ graph_auth.py              # MSAL OAuth2 device code flow
-Ã¢â€â€š       Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ graph/
-Ã¢â€â€š       Ã¢â€â€š   Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ __init__.py
-Ã¢â€â€š       Ã¢â€â€š   Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ client.py                  # Graph API client wrapper with retry logic
-Ã¢â€â€š       Ã¢â€â€š   Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ messages.py                # Email operations (list, move, categorize, reply state)
+Ã¢â€â€š       Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ graph/
+Ã¢â€â€š       Ã¢â€â€š   Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ __init__.py
+Ã¢â€â€š       Ã¢â€â€š   Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ client.py                  # Graph API client wrapper with retry logic
+Ã¢â€â€š       Ã¢â€â€š   Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ messages.py                # Email operations (list, move, categorize, reply state)
 Ã¢â€â€š       Ã¢â€â€š   Ã¢â€â€Ã¢â€â‚¬Ã¢â€â‚¬ folders.py                 # Folder operations (create, list)
-Ã¢â€â€š       Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ classifier/
-Ã¢â€â€š       Ã¢â€â€š   Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ __init__.py
-Ã¢â€â€š       Ã¢â€â€š   Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ auto_rules.py              # Pattern-based auto-routing
-Ã¢â€â€š       Ã¢â€â€š   Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ claude_classifier.py       # Claude API classification (tool use)
-Ã¢â€â€š       Ã¢â€â€š   Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ prompts.py                 # Prompt templates
+Ã¢â€â€š       Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ classifier/
+Ã¢â€â€š       Ã¢â€â€š   Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ __init__.py
+Ã¢â€â€š       Ã¢â€â€š   Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ auto_rules.py              # Pattern-based auto-routing
+Ã¢â€â€š       Ã¢â€â€š   Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ claude_classifier.py       # Claude API classification (tool use)
+Ã¢â€â€š       Ã¢â€â€š   Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ prompts.py                 # Prompt templates
 Ã¢â€â€š       Ã¢â€â€š   Ã¢â€â€Ã¢â€â‚¬Ã¢â€â‚¬ snippet.py                 # Email body cleaning pipeline
-Ã¢â€â€š       Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ engine/
-Ã¢â€â€š       Ã¢â€â€š   Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ __init__.py
-Ã¢â€â€š       Ã¢â€â€š   Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ bootstrap.py               # Bootstrap scanner (two-pass)
-Ã¢â€â€š       Ã¢â€â€š   Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ triage.py                  # Triage engine (scheduler loop)
-Ã¢â€â€š       Ã¢â€â€š   Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ digest.py                  # Daily digest generator
+Ã¢â€â€š       Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ engine/
+Ã¢â€â€š       Ã¢â€â€š   Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ __init__.py
+Ã¢â€â€š       Ã¢â€â€š   Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ bootstrap.py               # Bootstrap scanner (two-pass)
+Ã¢â€â€š       Ã¢â€â€š   Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ triage.py                  # Triage engine (scheduler loop)
+Ã¢â€â€š       Ã¢â€â€š   Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ digest.py                  # Daily digest generator
 Ã¢â€â€š       Ã¢â€â€š   Ã¢â€â€Ã¢â€â‚¬Ã¢â€â‚¬ waiting_for.py             # Waiting-for tracker
-Ã¢â€â€š       Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ db/
-Ã¢â€â€š       Ã¢â€â€š   Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ __init__.py
-Ã¢â€â€š       Ã¢â€â€š   Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ models.py                  # SQLite schema & migrations
+Ã¢â€â€š       Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ db/
+Ã¢â€â€š       Ã¢â€â€š   Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ __init__.py
+Ã¢â€â€š       Ã¢â€â€š   Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ models.py                  # SQLite schema & migrations
 Ã¢â€â€š       Ã¢â€â€š   Ã¢â€â€Ã¢â€â‚¬Ã¢â€â‚¬ store.py                   # Database operations
 Ã¢â€â€š       Ã¢â€â€Ã¢â€â‚¬Ã¢â€â‚¬ web/
-Ã¢â€â€š           Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ __init__.py
-Ã¢â€â€š           Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ app.py                     # FastAPI application
-Ã¢â€â€š           Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ routes.py                  # API routes + page routes
-Ã¢â€â€š           Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ static/
+Ã¢â€â€š           Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ __init__.py
+Ã¢â€â€š           Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ app.py                     # FastAPI application
+Ã¢â€â€š           Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ routes.py                  # API routes + page routes
+Ã¢â€â€š           Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ static/
 Ã¢â€â€š           Ã¢â€â€š   Ã¢â€â€Ã¢â€â‚¬Ã¢â€â‚¬ style.css
 Ã¢â€â€š           Ã¢â€â€Ã¢â€â‚¬Ã¢â€â‚¬ templates/
-Ã¢â€â€š               Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ base.html
-Ã¢â€â€š               Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ dashboard.html
-Ã¢â€â€š               Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ review.html
-Ã¢â€â€š               Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ waiting.html
-Ã¢â€â€š               Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ config.html
+Ã¢â€â€š               Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ base.html
+Ã¢â€â€š               Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ dashboard.html
+Ã¢â€â€š               Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ review.html
+Ã¢â€â€š               Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ waiting.html
+Ã¢â€â€š               Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ config.html
 Ã¢â€â€š               Ã¢â€â€Ã¢â€â‚¬Ã¢â€â‚¬ log.html
                ├── stats.html
                ├── senders.html
-Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ tests/
-Ã¢â€â€š   Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ conftest.py
-Ã¢â€â€š   Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ test_auto_rules.py
-Ã¢â€â€š   Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ test_classifier.py
-Ã¢â€â€š   Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ test_bootstrap.py
-Ã¢â€â€š   Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ test_triage.py
-Ã¢â€â€š   Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ test_config_validation.py
-Ã¢â€â€š   Ã¢â€Å“Ã¢â€â‚¬Ã¢â€â‚¬ test_snippet_cleaning.py
+Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ tests/
+Ã¢â€â€š   Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ conftest.py
+Ã¢â€â€š   Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ test_auto_rules.py
+Ã¢â€â€š   Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ test_classifier.py
+Ã¢â€â€š   Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ test_bootstrap.py
+Ã¢â€â€š   Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ test_triage.py
+Ã¢â€â€š   Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ test_config_validation.py
+Ã¢â€â€š   Ã¢â€Å"Ã¢â€â‚¬Ã¢â€â‚¬ test_snippet_cleaning.py
 Ã¢â€â€š   Ã¢â€â€Ã¢â€â‚¬Ã¢â€â‚¬ fixtures/
 Ã¢â€â€š       Ã¢â€â€Ã¢â€â‚¬Ã¢â€â‚¬ sample_emails.json
 │   ├── test_sender_profiles.py
@@ -274,23 +277,44 @@ python -m assistant bootstrap --force          # Re-run bootstrap (skip confirma
 24. Structured logging with triage_cycle_id correlation IDs
 25. Config schema versioning with migration support
 
-### Phase 2 — Intelligence
+### Phase 1.5 -- Native Microsoft 365 Integration
+
+**Goal:** Establish lean plumbing for To Do tasks, category management, and immutable message IDs
+
+1. Add `Tasks.ReadWrite` permission; upgrade `MailboxSettings.Read` to `ReadWrite`
+2. Implement immutable message ID migration (`Prefer: IdType="ImmutableId"` header)
+3. `graph_tasks.py` module: To Do task list discovery/creation, task CRUD with linkedResources
+4. `graph_tasks.py` module: master category list management (read/create/delete)
+5. Category bootstrap: ensure framework categories (priorities + action types) exist with correct colors; create taxonomy categories for each project/area in config; interactive cleanup of orphaned categories
+6. `task_sync` SQLite table and `store.py` CRUD operations
+7. Config schema update: integrations section with todo config
+8. Triage engine hooks: apply compound categories (priority + action + taxonomy) to emails and create To Do tasks on suggestion approval
+9. Chat tool extension: `add_project_or_area` also creates taxonomy category
+10. Config hot-reload: create categories for newly added projects/areas
+11. Tests: category bootstrap, task creation, immutable IDs, category application
+12. Token cache migration: delete existing token cache to force re-auth with expanded scopes
+
+> See `Reference/spec/10-native-task-integration.md` for full architecture details.
+
+### Phase 2 -- Intelligence
 
 **Goal:** Improve classification, add tracking, add digest
 
-1. Waiting-for tracker (automatic detection + manual marking)
-2. Daily digest generation
-3. Learning from corrections via classification preferences memory (track user correction patterns, generate natural language preferences, include in future prompts)
-4. Delta queries for efficient inbox polling (including 410 Gone handling and deduplication)
-5. Confidence calibration (analyze predicted confidence vs. actual approval rate, recommend model upgrades)
-6. Sender affinity auto-rules: when sender history shows >90% classification to a single folder with 10+ emails, automatically propose an auto_rule to skip Claude entirely
-7. Token cache encryption at rest
-8. Webhook + delta query hybrid for near-real-time processing
-9. Auto-rules hygiene: conflict detection, stale rule warnings, consolidation suggestions
-10. Suggestion queue management: auto-expire old pending suggestions, auto-approve high-confidence after delay
-11. Stats & accuracy dashboard page (`/stats`)
-12. Sender management page (`/senders`)
-13. Graceful degradation: auto-rules-only mode during extended Claude API outages
+**Prerequisites:** Phase 1 and Phase 1.5 fully implemented and tested.
+
+1. Delta queries with 5-minute polling interval (replaces timestamp polling, enables near-real-time)
+2. Learning from corrections via classification preferences memory + category growth through learning + `manage_category` chat tool + `AVAILABLE CATEGORIES` in prompts
+3. Suggestion queue management: auto-expire old pending suggestions, auto-approve high-confidence after delay
+4. Sender affinity auto-rules: when sender history shows >90% classification to a single folder with 10+ emails, automatically propose an auto_rule to skip Claude entirely
+5. Waiting-for tracker + To Do sync + email flags (builds on Phase 1.5 `graph_tasks.py`, adds bidirectional task sync and `followUpFlag` operations)
+6. Daily digest generation + calendar awareness (builds on Phase 1.5, adds `Calendars.Read` for schedule-aware delivery)
+7. Auto-rules hygiene: conflict detection, stale rule warnings, consolidation suggestions
+8. Stats & accuracy dashboard page (`/stats`)
+9. Confidence calibration (integrates into stats dashboard)
+10. Sender management page (`/senders`)
+11. Enhanced graceful degradation: auto-rules-only mode with backlog recovery and dashboard indicators
+
+> See `guides/PHASE_2_INTELLIGENCE.md` for detailed Phase 2 implementation guide.
 
 ### Phase 3 Ã¢â‚¬â€ Autonomy
 

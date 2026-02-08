@@ -169,6 +169,23 @@ class ActionLogEntry:
     triggered_by: str | None = None
 
 
+@dataclass(frozen=True)
+class TaskSync:
+    """Task sync record mapping To Do tasks to emails."""
+
+    id: int
+    email_id: str
+    todo_task_id: str
+    todo_list_id: str
+    task_type: str
+    created_at: datetime
+    synced_at: datetime | None = None
+    status: str = "active"
+
+
+TaskSyncStatus = Literal["active", "completed", "deleted"]
+
+
 @dataclass
 class SenderHistory:
     """Sender history with folder distribution."""
@@ -1994,6 +2011,260 @@ class DatabaseStore:
             details_json=details_json,
             triggered_by=row["triggered_by"],
         )
+
+    # =========================================================================
+    # Task Sync Operations (Phase 1.5)
+    # =========================================================================
+
+    async def create_task_sync(
+        self,
+        email_id: str,
+        todo_task_id: str,
+        todo_list_id: str,
+        task_type: str,
+    ) -> int:
+        """Create a task sync record mapping a To Do task to an email.
+
+        Args:
+            email_id: Graph message ID (immutable)
+            todo_task_id: Graph To Do task ID
+            todo_list_id: Graph To Do list ID
+            task_type: Task type ('waiting_for', 'needs_reply', 'review', 'delegated')
+
+        Returns:
+            The new task_sync ID
+        """
+        try:
+            async with self._db() as db:
+                cursor = await db.execute(
+                    """
+                    INSERT INTO task_sync (
+                        email_id, todo_task_id, todo_list_id, task_type
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (email_id, todo_task_id, todo_list_id, task_type),
+                )
+                await db.commit()
+
+                task_sync_id = cursor.lastrowid
+                logger.debug(
+                    "Task sync created",
+                    task_sync_id=task_sync_id,
+                    email_id=email_id,
+                    todo_task_id=todo_task_id,
+                )
+                return task_sync_id
+
+        except aiosqlite.Error as e:
+            logger.error("Failed to create task sync", email_id=email_id, error=str(e))
+            raise DatabaseError(f"Failed to create task sync: {e}") from e
+
+    async def get_task_sync_by_email(self, email_id: str) -> TaskSync | None:
+        """Get the task sync record for an email.
+
+        Args:
+            email_id: Graph message ID
+
+        Returns:
+            TaskSync or None if no task mapping exists
+        """
+        try:
+            async with self._db() as db:
+                cursor = await db.execute(
+                    "SELECT * FROM task_sync WHERE email_id = ? ORDER BY created_at DESC LIMIT 1",
+                    (email_id,),
+                )
+                row = await cursor.fetchone()
+                if not row:
+                    return None
+                return self._row_to_task_sync(row)
+
+        except aiosqlite.Error as e:
+            logger.error("Failed to get task sync by email", email_id=email_id, error=str(e))
+            raise DatabaseError(f"Failed to get task sync by email: {e}") from e
+
+    async def get_task_sync_by_task(self, todo_task_id: str) -> TaskSync | None:
+        """Get the task sync record for a To Do task.
+
+        Args:
+            todo_task_id: Graph To Do task ID
+
+        Returns:
+            TaskSync or None if no mapping exists
+        """
+        try:
+            async with self._db() as db:
+                cursor = await db.execute(
+                    "SELECT * FROM task_sync WHERE todo_task_id = ?",
+                    (todo_task_id,),
+                )
+                row = await cursor.fetchone()
+                if not row:
+                    return None
+                return self._row_to_task_sync(row)
+
+        except aiosqlite.Error as e:
+            logger.error("Failed to get task sync by task", todo_task_id=todo_task_id, error=str(e))
+            raise DatabaseError(f"Failed to get task sync by task: {e}") from e
+
+    async def update_task_sync_status(
+        self,
+        task_sync_id: int,
+        status: str,
+        synced_at: datetime | None = None,
+    ) -> None:
+        """Update the status of a task sync record.
+
+        Args:
+            task_sync_id: The task_sync ID
+            status: New status ('active', 'completed', 'deleted')
+            synced_at: Optional timestamp of last sync
+        """
+        try:
+            async with self._db() as db:
+                await db.execute(
+                    """
+                    UPDATE task_sync
+                    SET status = ?, synced_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        status,
+                        synced_at.isoformat() if synced_at else datetime.now().isoformat(),
+                        task_sync_id,
+                    ),
+                )
+                await db.commit()
+
+        except aiosqlite.Error as e:
+            logger.error(
+                "Failed to update task sync status",
+                task_sync_id=task_sync_id,
+                error=str(e),
+            )
+            raise DatabaseError(f"Failed to update task sync status: {e}") from e
+
+    async def get_active_task_syncs(self) -> list[TaskSync]:
+        """Get all active task sync records (for Phase 2 sync cycle).
+
+        Returns:
+            List of active TaskSync records
+        """
+        try:
+            async with self._db() as db:
+                cursor = await db.execute(
+                    """
+                    SELECT * FROM task_sync
+                    WHERE status = 'active'
+                    ORDER BY created_at DESC
+                    """
+                )
+                rows = await cursor.fetchall()
+                return [self._row_to_task_sync(row) for row in rows]
+
+        except aiosqlite.Error as e:
+            logger.error("Failed to get active task syncs", error=str(e))
+            raise DatabaseError(f"Failed to get active task syncs: {e}") from e
+
+    def _row_to_task_sync(self, row: aiosqlite.Row) -> TaskSync:
+        """Convert a database row to a TaskSync dataclass."""
+        return TaskSync(
+            id=row["id"],
+            email_id=row["email_id"],
+            todo_task_id=row["todo_task_id"],
+            todo_list_id=row["todo_list_id"],
+            task_type=row["task_type"],
+            created_at=datetime.fromisoformat(row["created_at"])
+            if row["created_at"]
+            else datetime.now(),
+            synced_at=datetime.fromisoformat(row["synced_at"]) if row["synced_at"] else None,
+            status=row["status"],
+        )
+
+    # =========================================================================
+    # Immutable ID Migration Operations (Phase 1.5)
+    # =========================================================================
+
+    async def get_all_email_ids(self) -> list[str]:
+        """Get all email IDs from the emails table.
+
+        Used during the one-time mutable-to-immutable ID migration.
+
+        Returns:
+            List of all email IDs
+        """
+        try:
+            async with self._db() as db:
+                cursor = await db.execute("SELECT id FROM emails")
+                rows = await cursor.fetchall()
+                return [row["id"] for row in rows]
+
+        except aiosqlite.Error as e:
+            logger.error("Failed to get all email IDs", error=str(e))
+            raise DatabaseError(f"Failed to get all email IDs: {e}") from e
+
+    async def update_email_id(self, old_id: str, new_id: str) -> None:
+        """Update an email ID and all foreign key references.
+
+        Used during the one-time mutable-to-immutable ID migration.
+        Updates the emails table PK and all FK references in suggestions,
+        waiting_for, action_log, llm_request_log, and task_sync.
+
+        Args:
+            old_id: Current (mutable) email ID
+            new_id: New (immutable) email ID
+        """
+        try:
+            async with self._db() as db:
+                # Disable FK enforcement for the atomic ID swap.
+                # PRAGMA foreign_keys must run outside a transaction,
+                # so commit any pending work first.
+                await db.commit()
+                await db.execute("PRAGMA foreign_keys = OFF")
+
+                # Update primary key first, then all FK references
+                await db.execute(
+                    "UPDATE emails SET id = ? WHERE id = ?",
+                    (new_id, old_id),
+                )
+                await db.execute(
+                    "UPDATE suggestions SET email_id = ? WHERE email_id = ?",
+                    (new_id, old_id),
+                )
+                await db.execute(
+                    "UPDATE waiting_for SET email_id = ? WHERE email_id = ?",
+                    (new_id, old_id),
+                )
+                await db.execute(
+                    "UPDATE action_log SET email_id = ? WHERE email_id = ?",
+                    (new_id, old_id),
+                )
+                await db.execute(
+                    "UPDATE llm_request_log SET email_id = ? WHERE email_id = ?",
+                    (new_id, old_id),
+                )
+                await db.execute(
+                    "UPDATE task_sync SET email_id = ? WHERE email_id = ?",
+                    (new_id, old_id),
+                )
+                await db.commit()
+
+                # Re-enable FK enforcement
+                await db.execute("PRAGMA foreign_keys = ON")
+
+                logger.debug(
+                    "Email ID updated",
+                    old_id=old_id[:20] + "...",
+                    new_id=new_id[:20] + "...",
+                )
+
+        except aiosqlite.Error as e:
+            logger.error(
+                "Failed to update email ID",
+                old_id=old_id[:20] + "...",
+                error=str(e),
+            )
+            raise DatabaseError(f"Failed to update email ID: {e}") from e
 
     # =========================================================================
     # Dashboard/Stats Operations

@@ -17,7 +17,7 @@
 
 Step 1: Connect to Outlook via Graph API
 Step 2: Fetch emails from last N days (default: 90, configurable via --days flag)
-        Show progress bar: "Fetching emails... [Ã¢â€“Ë†Ã¢â€“Ë†Ã¢â€“Ë†Ã¢â€“Ë†Ã¢â€“â€˜Ã¢â€“â€˜Ã¢â€“â€˜Ã¢â€“â€˜] 1,200/3,000"
+        Show progress bar: "Fetching emails... [Ã¢â€"Ë†Ã¢â€"Ë†Ã¢â€"Ë†Ã¢â€"Ë†Ã¢â€"â€˜Ã¢â€"â€˜Ã¢â€"â€˜Ã¢â€"â€˜] 1,200/3,000"
 Step 3: Extract metadata for each email:
         - Subject, sender email, sender name, received date
         - Cleaned snippet (see Section 6 below)
@@ -48,9 +48,9 @@ Step 8: Print summary to console with instructions to review
 ### Bootstrap Idempotency
 
 If `bootstrap` is run again after a previous run:
-1. Check for existing `config/config.yaml.proposed` — if present, prompt the user: "A proposed config already exists. Overwrite? (y/N)"
-2. Check `agent_state.last_bootstrap_run` — if set, warn: "Bootstrap was last run on {date}. Running again will re-analyze all email and generate a new proposed config. Continue? (y/N)"
-3. Bootstrap does NOT modify an existing `config.yaml` — it always writes to `config.yaml.proposed`
+1. Check for existing `config/config.yaml.proposed` -- if present, prompt the user: "A proposed config already exists. Overwrite? (y/N)"
+2. Check `agent_state.last_bootstrap_run` -- if set, warn: "Bootstrap was last run on {date}. Running again will re-analyze all email and generate a new proposed config. Continue? (y/N)"
+3. Bootstrap does NOT modify an existing `config.yaml` -- it always writes to `config.yaml.proposed`
 4. The `--force` flag skips confirmation prompts (useful for scripted re-runs)
 
 ### Sender Profile Population
@@ -61,7 +61,7 @@ During bootstrap Pass 1, the agent builds initial sender profiles from the scann
 3. Write sender profiles to the `sender_profiles` table after consolidation (Pass 2)
 4. Sender profiles with >90% of emails to a single folder and 10+ total emails are flagged as `auto_rule_candidate = 1`
 
-> **Ref:** Inbox Zero's sender-level categorization approach — categorizing senders (not just individual emails) enables faster routing and a "manage senders" UI.
+> **Ref:** Inbox Zero's sender-level categorization approach -- categorizing senders (not just individual emails) enables faster routing and a "manage senders" UI.
 > https://github.com/elie222/inbox-zero (sender categorization feature)
 
 ### Dry-Run Classifier
@@ -86,16 +86,16 @@ Folder Distribution:
   ...
 
 Sample Classifications (20 shown):
-  Ã¢Å“â€° "Re: Outbound scanning go-live date" from john@tradecore...
-    Ã¢â€ â€™ Projects/Tradecore Steel | P2 - Important | Needs Reply
+  Ã¢Å"â€° "Re: Outbound scanning go-live date" from john@tradecore...
+    Ã¢â€ â€™ Projects/Tradecore Steel | P2 - Important | Needs Reply
 
-  Ã¢Å“â€° "SYSPRO Partner Newsletter - January" from news@syspro.com
-    Ã¢â€ â€™ Reference/Newsletters | P4 - Low | FYI Only
+  Ã¢Å"â€° "SYSPRO Partner Newsletter - January" from news@syspro.com
+    Ã¢â€ â€™ Reference/Newsletters | P4 - Low | FYI Only
   ...
 
 Unclassified Emails (need config refinement):
-  Ã¢Å“â€° "Lunch Thursday?" from mike@personal.com
-    Ã¢â€ â€™ No matching project or area
+  Ã¢Å"â€° "Lunch Thursday?" from mike@personal.com
+    Ã¢â€ â€™ No matching project or area
   ...
 ```
 
@@ -103,7 +103,7 @@ Unclassified Emails (need config refinement):
 - `--days N`: How many days of email to scan (default: 90)
 - `--sample N`: Number of example classifications to show in the report (default: 20). All emails are classified regardless.
 - `--limit N`: Cap total emails classified (useful for testing without burning through API calls). Default: no limit.
-- `--dry-run`: (Also available as `triage --once --dry-run`) — Classify without creating suggestions or modifying state. Outputs report to stdout only.
+- `--dry-run`: (Also available as `triage --once --dry-run`) -- Classify without creating suggestions or modifying state. Outputs report to stdout only.
 
 ### Confusion Matrix Output (when historical corrections exist)
 
@@ -117,11 +117,11 @@ Folder Accuracy: 87.2% (272/312 matched user's choice)
   Most confused: Projects/SOC 2 ↔ Areas/Development (8 swaps)
 
 Priority Accuracy: 91.0% (284/312 matched)
-  Most common correction: P3 → P2 (18 times)
-  Most common correction: P2 → P1 (9 times)
+  Most common correction: P3 -> P2 (18 times)
+  Most common correction: P2 -> P1 (9 times)
 
 Action Type Accuracy: 93.3% (291/312 matched)
-  Most common correction: FYI Only → Needs Reply (12 times)
+  Most common correction: FYI Only -> Needs Reply (12 times)
 ```
 
 This helps users identify where config refinement or model upgrades would have the most impact.
@@ -172,17 +172,17 @@ Step 5: Log triage cycle summary at INFO level
 
 ### ETL Pipeline Structure
 
-The triage process is structured as a three-stage ETL (Extract → Transform → Load) pipeline. Separating these stages makes retry logic simpler (re-classify without re-fetching), enables dry-run against already-fetched emails, and simplifies testing.
+The triage process is structured as a three-stage ETL (Extract -> Transform -> Load) pipeline. Separating these stages makes retry logic simpler (re-classify without re-fetching), enables dry-run against already-fetched emails, and simplifies testing.
 
 > **Ref:** gmail-llm-labeler uses an explicit ETL pipeline pattern for the same reasons.
 > https://github.com/ColeMurray/gmail-llm-labeler
 > Blog: https://www.colemurray.com/blog/automate-email-labeling-gmail-llm
 
-**Extract:** Steps 1-2a above — fetch from Graph API, store raw metadata in `emails` table with `classification_status = 'pending'`.
+**Extract:** Steps 1-2a above -- fetch from Graph API, store raw metadata in `emails` table with `classification_status = 'pending'`.
 
-**Transform:** Steps 2b-2f — check rules, inheritance, classify via Claude. All Claude interactions are logged to `llm_request_log` (see `02-config-and-schema.md` Section 3).
+**Transform:** Steps 2b-2f -- check rules, inheritance, classify via Claude. All Claude interactions are logged to `llm_request_log` (see `02-config-and-schema.md` Section 3).
 
-**Load:** Steps 2g-2h — store classification result, create suggestion record.
+**Load:** Steps 2g-2h -- store classification result, create suggestion record.
 
 This means `triage --once --dry-run` can run the Transform stage against already-extracted emails without creating suggestion records or modifying the database.
 
@@ -233,7 +233,7 @@ When users correct suggestions in the Review UI, the corrections are analyzed to
 When the Claude API is unavailable for an extended period (hours, not just single-cycle failures):
 
 1. **First 3 cycles with failures:** Normal retry behavior per the error handling table below
-2. **After 3 consecutive failed cycles:** Switch to "auto-rules only" mode — only process emails that match an auto_rule, queue the rest as `classification_status = 'pending'`
+2. **After 3 consecutive failed cycles:** Switch to "auto-rules only" mode -- only process emails that match an auto_rule, queue the rest as `classification_status = 'pending'`
 3. **Log WARNING:** "Claude API unavailable for {N} consecutive cycles. Operating in auto-rules-only mode. {M} emails queued for classification when API recovers."
 4. **On recovery:** Process the backlog of pending emails in FIFO order, rate-limited to avoid burst API usage
 5. **Dashboard indicator:** Show degraded mode status on the Review UI dashboard
@@ -381,8 +381,8 @@ Email arrives in watched folder
        - Sender history ("94% of emails from this sender -> Projects/Tradecore Steel")
        - Key contact annotations
        - Inherited folder (if thread inheritance applies Ã¢â‚¬" Claude classifies priority/action only)
-       - Sender profile (from sender_profiles table — category, default_folder)
-       - Learned classification preferences (from agent_state — natural language context)
+       - Sender profile (from sender_profiles table -- category, default_folder)
+       - Learned classification preferences (from agent_state -- natural language context)
        |
        v
      Claude returns structured tool call response
@@ -395,6 +395,16 @@ Email arrives in watched folder
        +-- Confidence < 0.5 --> Create suggestion with flag "low_confidence"
                                  Include in daily digest for manual review
 ```
+
+### Phase 1.5 Integration: After Suggestion Approval
+
+When a suggestion with an actionable `action_type` (Needs Reply, Waiting For, Review, Delegated) is approved, the triage engine:
+1. Creates a To Do task via `graph_tasks.py` (if `integrations.todo.enabled` and the action type is in `create_for_action_types`)
+2. Applies the full category set (priority + action type + taxonomy) to the email in a single PATCH call
+3. Applies priority + taxonomy categories to the To Do task (action type is conveyed via task `status`)
+4. Records the task mapping in `task_sync`
+
+In autonomous mode (Phase 3), tasks and categories are applied immediately upon classification for high-confidence results, without waiting for approval.
 
 ### Error Handling for Claude API Calls
 
@@ -434,11 +444,11 @@ All failed classifications are visible in the Review UI under a "Failed" tab and
      - Confidence score (color-coded: green Ã¢â€°Â¥0.85, yellow 0.5-0.85, red <0.5)
      - Claude's reasoning (expandable)
    - Actions per suggestion (per-field granularity):
-     - Ã¢Å“â€¦ Approve All Ã¢â‚¬â€ accept folder, priority, and action type as suggested
-     - Ã¢Å“ÂÃ¯Â¸Â Correct Ã¢â‚¬â€ per-field dropdowns to change folder, priority, or action type independently
-     - Ã¢ÂÅ’ Reject Ã¢â‚¬â€ leave email in inbox, mark suggestion rejected
-     - Ã°Å¸â€â€” Open in Outlook Ã¢â‚¬â€ deep link (see Section 8)
-     - Ã°Å¸â€œÅ’ Create Rule Ã¢â‚¬â€ "Always route emails from [sender] to [folder]?" (writes auto_rule to config.yaml)
+     - Ã¢Å"â€¦ Approve All Ã¢â‚¬â€ accept folder, priority, and action type as suggested
+     - Ã¢Å"ÂÃ¯Â¸Â Correct Ã¢â‚¬â€ per-field dropdowns to change folder, priority, or action type independently
+     - Ã¢ÂÅ' Reject Ã¢â‚¬â€ leave email in inbox, mark suggestion rejected
+     - Ã°Å¸â€â€" Open in Outlook Ã¢â‚¬â€ deep link (see Section 8)
+     - Ã°Å¸â€œÅ' Create Rule Ã¢â‚¬â€ "Always route emails from [sender] to [folder]?" (writes auto_rule to config.yaml)
    - Bulk actions: "Approve all high-confidence" (Ã¢â€°Â¥ 0.85)
    - **Failed tab**: Emails where classification failed after 3 attempts. Manual classification form.
 
@@ -473,7 +483,7 @@ All failed classifications are visible in the Review UI under a "Failed" tab and
    - Quick actions: change sender category, set default folder, create auto-rule
    - Highlight auto-rule candidates (senders with >90% to a single folder, 10+ emails)
 
-   > **Ref:** Inbox Zero's sender categorization UI — managing senders (not just emails) gives
+   > **Ref:** Inbox Zero's sender categorization UI -- managing senders (not just emails) gives
    > users a higher-level view of their inbox composition.
    > https://github.com/elie222/inbox-zero
 
@@ -484,6 +494,8 @@ All failed classifications are visible in the Review UI under a "Failed" tab and
 **Purpose:** Morning summary of email status.
 
 **Trigger:** Scheduled at configured time (default 08:00 local).
+
+**Phase 1.5/2 integration:** Phase 2 digest generation reads task completion status from the Graph API (via `task_sync` cross-reference) in addition to SQLite state. Calendar awareness for delivery timing requires `Calendars.Read` (Phase 2 Feature 2C).
 
 **Content:**
 
@@ -505,15 +517,15 @@ All failed classifications are visible in the Review UI under a "Failed" tab and
   Ã¢â‚¬Â¢ Waiting on Sarah for SOC 2 evidence package (72 hours)
   Ã¢â‚¬Â¢ Waiting on DevOps for staging deployment (50 hours)
 
-Ã°Å¸â€œÅ  YESTERDAY'S ACTIVITY
+Ã°Å¸â€œÅ  YESTERDAY'S ACTIVITY
   Ã¢â‚¬Â¢ 47 emails processed
   Ã¢â‚¬Â¢ 12 auto-routed (newsletters, notifications)
   Ã¢â‚¬Â¢ 31 classified by AI (28 approved, 3 pending review)
   Ã¢â‚¬Â¢ 4 unclassified (need manual review)
-  Ã¢â‚¬Â¢ 2 classifications failed (see /review Ã¢â€ â€™ Failed tab)
+  Ã¢â‚¬Â¢ 2 classifications failed (see /review Ã¢â€ â€™ Failed tab)
 
 Ã°Å¸â€œâ€¹ PENDING REVIEW (7 suggestions awaiting your input)
-  Ã¢â€ â€™ http://localhost:8080/review
+  Ã¢â€ â€™ http://localhost:8080/review
 Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
 ```
 
@@ -533,6 +545,8 @@ All failed classifications are visible in the Review UI under a "Failed" tab and
 - If a reply arrives from `expected_from`, marks the waiting-for item as "received"
 - If no reply after `nudge_after_hours`, includes in daily digest
 - If no reply after `escalate_after_hours`, flags as critical in digest
+
+**Phase 1.5 plumbing:** Phase 1.5 establishes To Do task creation and the `task_sync` table. When Phase 2 builds the active waiting-for tracker, it uses this plumbing to create To Do tasks with `status: "waitingOnOthers"` and `linkedResources` pointing to the email. Phase 2 also adds bidirectional sync (detecting when the user completes a task in To Do) and email `followUpFlag` operations.
 
 ---
 
@@ -569,8 +583,8 @@ This turns user corrections into permanent rules, reducing future API calls and 
 As the system operates over weeks and months, auto-rules can accumulate. Without management, they create conflicts and make the config unwieldy.
 
 > **Ref:** Inbox Zero's ARCHITECTURE.md documents problems with auto-generated rules accumulating
-> over time — hundreds of rules with some conflicting.
-> https://github.com/elie222/inbox-zero (ARCHITECTURE.md — rule management lessons)
+> over time -- hundreds of rules with some conflicting.
+> https://github.com/elie222/inbox-zero (ARCHITECTURE.md -- rule management lessons)
 
 **Safeguards:**
 1. **Rule count warning:** When `auto_rules` exceeds `auto_rules_hygiene.max_rules` (default: 100), the dashboard shows a warning and the CLI `validate-config` command outputs a notice
