@@ -264,10 +264,27 @@ def _priority_class(priority: str | None) -> str:
     return "priority-p4"
 
 
+def _format_received(dt: datetime | None) -> str:
+    """Format a received datetime as 'DD Mon HH:MM' for card display."""
+    if dt is None:
+        return "Unknown"
+    # Handle timezone-aware datetimes: convert to local time for display
+    if dt.tzinfo is not None:
+        import time as _time
+
+        # Convert UTC offset to local time using system timezone
+        local_offset = timedelta(seconds=-_time.timezone if not _time.daylight else -_time.altzone)
+        local_dt = dt + local_offset - (dt.utcoffset() or timedelta())
+    else:
+        local_dt = dt
+    return local_dt.strftime("%d %b %H:%M")
+
+
 # Register template filters
 templates.env.filters["time_ago"] = _time_ago
 templates.env.filters["confidence_class"] = _confidence_class
 templates.env.filters["priority_class"] = _priority_class
+templates.env.filters["format_received"] = _format_received
 
 
 # ---------------------------------------------------------------------------

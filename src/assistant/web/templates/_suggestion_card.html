@@ -6,10 +6,10 @@
 {% set email = item.email %}
 
 <div class="suggestion-card" id="suggestion-{{ s.id }}">
-    <!-- Header: subject + time -->
+    <!-- Header: subject + received date -->
     <div class="suggestion-header">
         <span class="suggestion-subject">{{ email.subject if email else "Unknown Subject" }}</span>
-        <span class="suggestion-meta">{{ s.created_at | time_ago }}</span>
+        <span class="suggestion-meta" title="Received">{{ email.received_at | format_received if email and email.received_at else "Unknown" }}</span>
     </div>
 
     <!-- Sender info -->

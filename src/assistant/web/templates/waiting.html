@@ -15,6 +15,7 @@
                 <th>Subject</th>
                 <th>Waiting On</th>
                 <th>Description</th>
+                <th>Received</th>
                 <th>Age</th>
                 <th>Action</th>
             </tr>
@@ -37,6 +38,7 @@
                 </td>
                 <td>{{ w.expected_from or "Unknown" }}</td>
                 <td>{{ w.description or "-" }}</td>
+                <td>{{ email.received_at | format_received if email and email.received_at else "-" }}</td>
                 <td>
                     <span class="{{ item.age_class }}">{{ item.age_hours }}h</span>
                 </td>
