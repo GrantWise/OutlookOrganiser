@@ -1011,6 +1011,9 @@ class TriageEngine:
         Returns:
             Count of successfully auto-approved and moved suggestions
         """
+        if not self._graph_client:
+            return 0
+
         queue_config = self._config.suggestion_queue
         if queue_config.auto_approve_confidence <= 0:
             return 0
@@ -1034,12 +1037,23 @@ class TriageEngine:
 
             folder_id = self._folder_manager.get_folder_id(folder_path)
             if not folder_id:
-                logger.warning(
-                    "auto_approve_folder_not_found",
-                    suggestion_id=suggestion.id,
-                    folder=folder_path,
-                )
-                continue
+                # Auto-create missing folder (same as manual approval)
+                try:
+                    created = self._folder_manager.create_folder(folder_path)
+                    folder_id = created["id"]
+                    logger.info(
+                        "auto_approve_folder_created",
+                        suggestion_id=suggestion.id,
+                        folder=folder_path,
+                    )
+                except GraphAPIError as e:
+                    logger.warning(
+                        "auto_approve_folder_create_failed",
+                        suggestion_id=suggestion.id,
+                        folder=folder_path,
+                        error=str(e),
+                    )
+                    continue
 
             moves.append((suggestion.email_id, folder_id))
             suggestion_map[suggestion.email_id] = (suggestion, folder_path)

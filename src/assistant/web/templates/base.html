@@ -106,6 +106,58 @@
         });
 
         // ---------------------------------------------------------------
+        // Cascading folder dropdown
+        // ---------------------------------------------------------------
+        (function() {
+            var treeEl = document.getElementById("folder-tree-data");
+            if (!treeEl) return;
+
+            var folderTree = JSON.parse(treeEl.textContent);
+
+            // Top-level select changed
+            document.addEventListener("change", function(evt) {
+                var sel = evt.target;
+                if (!sel.classList.contains("folder-top")) return;
+
+                var sid = sel.dataset.suggestionId;
+                var subSel = document.getElementById("folder-sub-" + sid);
+                var hidden = document.getElementById("folder-" + sid);
+                var topVal = sel.value;
+
+                if (!topVal) {
+                    subSel.style.display = "none";
+                    subSel.innerHTML = '<option value="">-- No subfolder --</option>';
+                    hidden.value = "";
+                    return;
+                }
+
+                var subs = folderTree[topVal] || [];
+                var html = '<option value="">-- No subfolder --</option>';
+                for (var i = 0; i < subs.length; i++) {
+                    html += '<option value="' + subs[i].replace(/"/g, '&quot;') + '">'
+                          + subs[i].replace(/</g, '&lt;') + '</option>';
+                }
+                subSel.innerHTML = html;
+                subSel.style.display = subs.length > 0 ? "" : "none";
+                hidden.value = topVal;
+            });
+
+            // Sub-level select changed
+            document.addEventListener("change", function(evt) {
+                var sel = evt.target;
+                if (!sel.classList.contains("folder-sub")) return;
+
+                var sid = sel.dataset.suggestionId;
+                var topSel = document.getElementById("folder-top-" + sid);
+                var hidden = document.getElementById("folder-" + sid);
+                var topVal = topSel.value;
+                var subVal = sel.value;
+
+                hidden.value = subVal ? topVal + "/" + subVal : topVal;
+            });
+        })();
+
+        // ---------------------------------------------------------------
         // Chat panel
         // ---------------------------------------------------------------
         (function() {

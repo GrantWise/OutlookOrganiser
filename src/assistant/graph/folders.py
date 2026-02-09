@@ -131,17 +131,14 @@ class FolderManager:
 
             logger.debug("Fetching mail folders from Graph API")
 
-            # Fetch top-level folders with child folders expanded
-            # Note: $expand only goes one level deep, so we recurse for deeper nesting
-            response = self.client.get(
+            # Fetch all top-level folders with child folders expanded.
+            # Use paginate() to follow @odata.nextLink if there are many folders.
+            # $expand=childFolders inlines one level of children per folder.
+            folders = self.client.paginate(
                 "/me/mailFolders",
-                params={
-                    "$expand": "childFolders",
-                    "$top": 100,  # Get more folders per page
-                },
+                params={"$expand": "childFolders"},
+                page_size=50,
             )
-
-            folders = response.get("value", [])
 
             # Flatten the folder hierarchy
             all_folders = self._flatten_folders(folders)
@@ -191,16 +188,23 @@ class FolderManager:
 
             # Process child folders if present
             child_folders = folder.get("childFolders", [])
-            if child_folders:
+            expected_count = folder.get("childFolderCount", 0)
+
+            if child_folders and len(child_folders) >= expected_count:
+                # $expand returned all children — use them directly
                 result.extend(self._flatten_folders(child_folders, parent_id=folder["id"]))
-            elif folder.get("childFolderCount", 0) > 0:
-                # Need to fetch child folders separately (expand didn't include them)
+            elif expected_count > 0:
+                # $expand returned none or only a partial list — fetch all children
+                # explicitly to avoid silently dropping folders
                 result.extend(self._fetch_child_folders(folder["id"]))
 
         return result
 
     def _fetch_child_folders(self, parent_id: str) -> list[dict[str, Any]]:
         """Fetch child folders for a given parent folder.
+
+        Uses pagination to ensure all children are returned, even when
+        a parent has many subfolders.
 
         Args:
             parent_id: ID of the parent folder
@@ -209,11 +213,11 @@ class FolderManager:
             Flat list of child folders (recursively flattened)
         """
         try:
-            response = self.client.get(
+            child_folders = self.client.paginate(
                 f"/me/mailFolders/{parent_id}/childFolders",
                 params={"$expand": "childFolders"},
+                page_size=50,
             )
-            child_folders = response.get("value", [])
             return self._flatten_folders(child_folders, parent_id=parent_id)
         except GraphAPIError as e:
             logger.warning(
@@ -404,21 +408,21 @@ class FolderManager:
             Created folder dictionary
 
         Raises:
-            GraphAPIError: If creation fails
+            GraphAPIError: If creation fails (except 409 which is recovered)
         """
         logger.info("Creating top-level folder", name=name)
 
-        response = self.client.post(
-            "/me/mailFolders",
-            json={"displayName": name},
-        )
+        try:
+            response = self.client.post(
+                "/me/mailFolders",
+                json={"displayName": name},
+            )
+        except GraphAPIError as e:
+            if e.status_code == 409:
+                return self._recover_existing_folder(name)
+            raise
 
-        logger.info(
-            "Folder created",
-            name=name,
-            id=response["id"],
-        )
-
+        logger.info("Folder created", name=name, id=response["id"])
         return response
 
     def _create_subfolder(self, parent_id: str, name: str) -> dict[str, Any]:
@@ -432,24 +436,53 @@ class FolderManager:
             Created folder dictionary
 
         Raises:
-            GraphAPIError: If creation fails
+            GraphAPIError: If creation fails (except 409 which is recovered)
         """
         parent_path = self._id_to_path.get(parent_id, parent_id)
         logger.info("Creating subfolder", name=name, parent=parent_path)
 
-        response = self.client.post(
-            f"/me/mailFolders/{parent_id}/childFolders",
-            json={"displayName": name},
-        )
+        try:
+            response = self.client.post(
+                f"/me/mailFolders/{parent_id}/childFolders",
+                json={"displayName": name},
+            )
+        except GraphAPIError as e:
+            if e.status_code == 409:
+                full_path = f"{parent_path}/{name}" if parent_path else name
+                return self._recover_existing_folder(full_path)
+            raise
 
-        logger.info(
-            "Subfolder created",
-            name=name,
-            id=response["id"],
-            parent=parent_path,
-        )
-
+        logger.info("Subfolder created", name=name, id=response["id"], parent=parent_path)
         return response
+
+    def _recover_existing_folder(self, path: str) -> dict[str, Any]:
+        """Recover from a 409 by refreshing cache and looking up the folder.
+
+        Called when create_folder gets ErrorFolderExists - the folder exists
+        in Outlook but was missing from our stale cache.
+
+        Args:
+            path: Folder path that already exists
+
+        Returns:
+            Existing folder dictionary
+
+        Raises:
+            GraphAPIError: If folder still not found after refresh
+        """
+        logger.info("folder_already_exists_recovering", path=path)
+        self.refresh_cache()
+
+        existing = self.get_folder_by_path(path)
+        if existing:
+            logger.info("folder_recovered_from_cache", path=path, id=existing["id"])
+            return existing
+
+        raise GraphAPIError(
+            f"Folder '{path}' exists (409) but could not be found after cache refresh",
+            status_code=409,
+            error_code="ErrorFolderExists",
+        )
 
     def refresh_cache(self) -> None:
         """Force refresh of the folder cache.

@@ -1,6 +1,7 @@
 {# Partial template for a single suggestion card.
    Context: item = {"suggestion": Suggestion, "email": Email}
-            folder_options = list of folder paths
+            folder_tree = dict of top-level -> subfolder list (from Graph API)
+            folder_options = flat list of folder paths (fallback when folder_tree is None)
 #}
 {% set s = item.suggestion %}
 {% set email = item.email %}
@@ -94,12 +95,46 @@
         <div class="form-row">
             <div>
                 <label for="folder-{{ s.id }}">Folder</label>
+                {% if folder_tree %}
+                {# Cascading two-level dropdown from live Outlook folders #}
+                {% set suggested_top = s.suggested_folder.split('/')[0] if s.suggested_folder and '/' in s.suggested_folder else '' %}
+                {% set suggested_sub = '/'.join(s.suggested_folder.split('/')[1:]) if s.suggested_folder and '/' in s.suggested_folder else '' %}
+                <div class="folder-cascade" data-suggestion-id="{{ s.id }}">
+                    <select class="folder-top" id="folder-top-{{ s.id }}"
+                            data-suggestion-id="{{ s.id }}">
+                        <option value="">-- Keep suggested --</option>
+                        {% for top_name in folder_tree.keys() | sort %}
+                        <option value="{{ top_name }}"
+                            {% if suggested_top == top_name %}selected{% endif %}>
+                            {{ top_name }}
+                        </option>
+                        {% endfor %}
+                    </select>
+                    <select class="folder-sub" id="folder-sub-{{ s.id }}"
+                            data-suggestion-id="{{ s.id }}"
+                            {% if not suggested_top or not folder_tree.get(suggested_top, []) %}style="display:none"{% endif %}>
+                        <option value="">-- No subfolder --</option>
+                        {% if suggested_top and suggested_top in folder_tree %}
+                            {% for sub in folder_tree[suggested_top] %}
+                            <option value="{{ sub }}"
+                                {% if sub == suggested_sub %}selected{% endif %}>
+                                {{ sub }}
+                            </option>
+                            {% endfor %}
+                        {% endif %}
+                    </select>
+                    <input type="hidden" id="folder-{{ s.id }}" name="folder"
+                           value="">
+                </div>
+                {% else %}
+                {# Fallback: flat dropdown from config #}
                 <select id="folder-{{ s.id }}" name="folder">
                     <option value="">-- Keep suggested --</option>
                     {% for f in folder_options %}
                     <option value="{{ f }}" {% if f == s.suggested_folder %}selected{% endif %}>{{ f }}</option>
                     {% endfor %}
                 </select>
+                {% endif %}
             </div>
             <div>
                 <label for="priority-{{ s.id }}">Priority</label>

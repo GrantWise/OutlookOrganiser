@@ -82,4 +82,8 @@
     </div>
 </div>
 <div id="chat-overlay" class="chat-overlay"></div>
+
+{% if folder_tree %}
+<script id="folder-tree-data" type="application/json">{{ folder_tree | tojson }}</script>
+{% endif %}
 {% endblock %}

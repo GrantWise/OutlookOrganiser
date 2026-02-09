@@ -232,6 +232,101 @@ def execute_email_move(
     return {"new_msg_id": new_msg_id, "graph_error": graph_error, "task_info": task_info}
 
 
+# System folders that should never appear in the move-target dropdown
+_SYSTEM_FOLDERS = frozenset(
+    {
+        "Inbox",
+        "Sent Items",
+        "Drafts",
+        "Deleted Items",
+        "Junk Email",
+        "Conversation History",
+        "Outbox",
+        "RSS Feeds",
+        "Sync Issues",
+        "Detected Items",
+        "Infected Items",
+        "Snoozed",
+    }
+)
+
+# Taxonomy top-levels that must always appear even if empty in Outlook
+_TAXONOMY_ROOTS = ("Projects", "Areas", "Reference", "Archive")
+
+
+def _build_folder_tree(
+    folder_manager: Any | None,
+    config: AppConfig,
+) -> dict[str, list[str]] | None:
+    """Build a two-level folder tree from actual Outlook folders.
+
+    Returns a dict mapping top-level folder names to sorted lists of
+    subfolder display names, or None if folder_manager is unavailable.
+    System folders (Inbox, Sent Items, etc.) are excluded.
+
+    Args:
+        folder_manager: FolderManager instance (may be None if auth failed).
+        config: AppConfig for ensuring taxonomy top-levels and config folders.
+
+    Returns:
+        ``{"Projects": ["Acme Corp", "Tradecore Steel"], ...}``
+        or None if folder_manager is unavailable.
+    """
+    if folder_manager is None:
+        return None
+
+    try:
+        folder_manager.list_folders()  # ensure cache is populated
+        all_paths = sorted(folder_manager._path_to_id.keys())
+    except (OSError, ValueError):
+        return None
+
+    tree: dict[str, list[str]] = {}
+    for path in all_paths:
+        parts = path.split("/")
+        top = parts[0]
+        if top in _SYSTEM_FOLDERS:
+            continue
+        if top not in tree:
+            tree[top] = []
+        if len(parts) == 2:
+            tree[top].append(parts[1])
+        elif len(parts) > 2:
+            # Flatten deeper nesting: "Reference/Dev/Alerts" -> subfolder "Dev/Alerts"
+            tree[top].append("/".join(parts[1:]))
+
+    # Ensure taxonomy top-levels always present
+    for category in _TAXONOMY_ROOTS:
+        if category not in tree:
+            tree[category] = []
+
+    # Merge config-defined folders that may not yet exist in Outlook
+    for p in config.projects:
+        _ensure_in_tree(tree, p.folder)
+    for a in config.areas:
+        _ensure_in_tree(tree, a.folder)
+    for rule in config.auto_rules:
+        _ensure_in_tree(tree, rule.action.folder)
+
+    # Sort subfolder lists
+    for key in tree:
+        tree[key].sort()
+
+    return tree
+
+
+def _ensure_in_tree(tree: dict[str, list[str]], folder_path: str) -> None:
+    """Add a folder path to the tree if not already present."""
+    parts = folder_path.rstrip("/").split("/")
+    top = parts[0]
+    if top not in tree:
+        tree[top] = []
+    if len(parts) >= 2:
+        sub = "/".join(parts[1:])
+        if sub not in tree[top]:
+            tree[top].append(sub)
+
+
 # ---------------------------------------------------------------------------
 # Template context helpers
 # ---------------------------------------------------------------------------
@@ -386,7 +481,7 @@ async def review_queue(
     config: AppConfig = Depends(get_config),
 ):
     """Review queue page with pending suggestions."""
-    suggestions = await store.get_pending_suggestions(limit=200)
+    suggestions = await store.get_pending_suggestions(limit=1000)
 
     # Batch-fetch all emails in a single query (eliminates N+1)
     email_ids = [s.email_id for s in suggestions]
@@ -396,26 +491,30 @@ async def review_queue(
     for s in suggestions:
         items.append({"suggestion": s, "email": emails_by_id.get(s.email_id)})
 
-    # Build folder options for correction dropdowns
-    folder_set: set[str] = set()
-    for p in config.projects:
-        folder_set.add(p.folder)
-    for a in config.areas:
-        folder_set.add(a.folder)
-    # Standard Reference and Archive folders (same as classifier prompt)
-    for ref in (
-        "Reference/Newsletters",
-        "Reference/Dev Notifications",
-        "Reference/Calendar",
-        "Reference/Industry",
-        "Reference/Vendor Updates",
-        "Archive/",
-    ):
-        folder_set.add(ref)
-    # Include any auto-rule folders
-    for rule in config.auto_rules:
-        folder_set.add(rule.action.folder)
-    folder_options = sorted(folder_set)
+    # Build folder tree from live Outlook folders (cascading dropdown)
+    folder_manager = request.app.state.folder_manager
+    folder_tree = _build_folder_tree(folder_manager, config)
+
+    # Fallback: flat list from config when folder_manager unavailable
+    folder_options: list[str] | None = None
+    if folder_tree is None:
+        folder_set: set[str] = set()
+        for p in config.projects:
+            folder_set.add(p.folder)
+        for a in config.areas:
+            folder_set.add(a.folder)
+        for ref in (
+            "Reference/Newsletters",
+            "Reference/Dev Notifications",
+            "Reference/Calendar",
+            "Reference/Industry",
+            "Reference/Vendor Updates",
+            "Archive",
+        ):
+            folder_set.add(ref)
+        for rule in config.auto_rules:
+            folder_set.add(rule.action.folder)
+        folder_options = sorted(folder_set)
 
     # Get failed classifications
     failed_emails = await store.get_emails_by_status("failed", limit=50)
@@ -425,6 +524,7 @@ async def review_queue(
         "review.html",
         {
             "items": items,
+            "folder_tree": folder_tree,
             "folder_options": folder_options,
             "failed_emails": failed_emails,
             "pending_count": len(suggestions),

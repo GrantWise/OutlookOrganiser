@@ -153,6 +153,7 @@ async def lifespan(app: FastAPI):
                 sent_cache=sent_cache,
                 config=config,
                 category_manager=category_manager,
+                graph_client=graph_client,
             )
         except Exception as e:
             logger.error("triage_engine_init_failed", error=str(e))

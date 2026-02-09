@@ -438,6 +438,7 @@ async def _run_triage_once(is_dry_run: bool) -> None:
         sent_cache=sent_cache,
         config=deps.config,
         category_manager=deps.category_manager,
+        graph_client=deps.graph_client,
     )
 
     if is_dry_run:
@@ -495,6 +496,7 @@ async def _run_triage_backlog(days: int) -> None:
         sent_cache=sent_cache,
         config=deps.config,
         category_manager=deps.category_manager,
+        graph_client=deps.graph_client,
     )
 
     console.print(
@@ -560,6 +562,7 @@ async def _run_triage_continuous(is_dry_run: bool) -> None:
         sent_cache=sent_cache,
         config=deps.config,
         category_manager=deps.category_manager,
+        graph_client=deps.graph_client,
     )
 
     async def run_cycle():
