@@ -66,6 +66,19 @@ class RateLimitExceeded(AssistantError):
     pass
 
 
+class DeltaTokenExpiredError(GraphAPIError):
+    """Delta sync token has expired (410 Gone). Must perform full sync.
+
+    Raised when the delta query returns HTTP 410, indicating the stored
+    delta token is too old. The caller should fall back to timestamp-based
+    polling and establish a fresh delta token on the next cycle.
+    """
+
+    def __init__(self, message: str, folder: str | None = None):
+        super().__init__(message, status_code=410, error_code="DeltaTokenExpired")
+        self.folder = folder
+
+
 class ConflictError(GraphAPIError):
     """Raised when a resource was modified by another client (412 Precondition Failed).
 

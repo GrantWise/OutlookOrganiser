@@ -378,3 +378,122 @@ LEARNED PREFERENCES (from user correction history):
 Treat them as strong guidance -- they represent the user's actual intent when the \
 standard signals were ambiguous or misleading.)\
 """
+
+
+# ---------------------------------------------------------------------------
+# Preference update prompt (Phase 2 - Feature 2D)
+# ---------------------------------------------------------------------------
+
+PREFERENCE_UPDATE_PROMPT = """\
+You are analyzing user corrections to an email classification system.
+The user has corrected the following classifications in the last {lookback_days} days:
+
+{corrections_formatted}
+
+Current learned preferences:
+{current_preferences}
+
+Based on these corrections, write updated classification preferences.
+Rules:
+- State preferences as clear, actionable rules
+- Preserve existing preferences that are NOT contradicted by new corrections
+- Remove preferences that are contradicted by new corrections
+- Keep the total under {max_words} words (these are included in every classification prompt)
+- Be specific: name senders, folders, priority levels
+- Do not include obvious rules (e.g., "newsletters go to newsletters folder")
+"""
+
+
+# ---------------------------------------------------------------------------
+# Available categories section builder (Phase 2 - Feature 2D)
+# ---------------------------------------------------------------------------
+
+
+def build_available_categories_section(categories: list[str]) -> str:
+    """Build the AVAILABLE CATEGORIES section for system prompts.
+
+    Groups categories by tier (framework, taxonomy, user) for clarity.
+    Only included when the learning system is active.
+
+    Args:
+        categories: List of all category names
+
+    Returns:
+        Formatted categories section string
+    """
+    if not categories:
+        return "No categories configured."
+
+    # Framework categories (P1-P4, action types)
+    framework_priorities = {
+        "P1 - Urgent Important",
+        "P2 - Important",
+        "P3 - Urgent Low",
+        "P4 - Low",
+    }
+    framework_actions = {
+        "Needs Reply",
+        "Review",
+        "Delegated",
+        "FYI Only",
+        "Waiting For",
+        "Scheduled",
+    }
+
+    framework = sorted(c for c in categories if c in framework_priorities or c in framework_actions)
+    taxonomy = sorted(c for c in categories if c.startswith(("Projects/", "Areas/")))
+    user_cats = sorted(c for c in categories if c not in framework and c not in taxonomy)
+
+    lines: list[str] = []
+
+    if framework:
+        lines.append("Framework: " + ", ".join(framework))
+    if taxonomy:
+        lines.append("Taxonomy: " + ", ".join(taxonomy))
+    if user_cats:
+        lines.append("User: " + ", ".join(user_cats))
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Digest prompt and tool (Phase 2 - prep for Sub-Phase E)
+# ---------------------------------------------------------------------------
+
+DIGEST_SYSTEM_PROMPT = """\
+You are a daily digest generator for an AI email management assistant.
+Summarize the user's email activity, highlight overdue items, and provide
+a concise overview of the day's email status. Use the generate_digest tool
+to produce a structured report.
+"""
+
+GENERATE_DIGEST_TOOL: dict[str, Any] = {
+    "name": "generate_digest",
+    "description": "Generate a structured daily digest report.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "summary": {
+                "type": "string",
+                "description": "One-paragraph executive summary of today's email status",
+            },
+            "overdue_replies_section": {
+                "type": "string",
+                "description": "Formatted section for overdue 'Needs Reply' items",
+            },
+            "waiting_for_section": {
+                "type": "string",
+                "description": "Formatted section for overdue 'Waiting For' items",
+            },
+            "activity_section": {
+                "type": "string",
+                "description": "Processing stats: classified, auto-ruled, failed",
+            },
+            "pending_section": {
+                "type": "string",
+                "description": "Count of pending suggestions awaiting review",
+            },
+        },
+        "required": ["summary"],
+    },
+}

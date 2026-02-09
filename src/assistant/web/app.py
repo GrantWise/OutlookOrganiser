@@ -165,6 +165,21 @@ async def lifespan(app: FastAPI):
 
         def _run_triage_sync():
             """Bridge async triage cycle into sync scheduler thread."""
+            from assistant.config import get_config as _get_config
+            from assistant.config import reload_config_if_changed
+
+            # P3: Hot-reload config and invalidate folder cache if changed
+            try:
+                if reload_config_if_changed():
+                    new_config = _get_config()
+                    triage_engine.update_config(new_config)
+                    app.state.config = new_config
+                    if folder_manager:
+                        folder_manager.refresh_cache()
+                    logger.info("config_hot_reloaded_in_triage")
+            except Exception as e:
+                logger.warning("config_reload_check_failed", error=str(e))
+
             try:
                 future = asyncio.run_coroutine_threadsafe(triage_engine.run_cycle(), loop)
                 future.result(timeout=300)  # 5 min max

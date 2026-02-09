@@ -1,0 +1,182 @@
+{% extends "base.html" %}
+{% block title %}Stats - Outlook AI Assistant{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>Statistics</h2>
+    <p>Classification performance and system metrics (last {{ days }} days)</p>
+</div>
+
+<!-- Calibration alerts -->
+{% if calibration_alerts %}
+<div class="stats-alerts">
+    {% for alert in calibration_alerts %}
+    <div class="alert alert-warning">{{ alert }}</div>
+    {% endfor %}
+</div>
+{% endif %}
+
+<!-- Approval Stats -->
+<div class="stats-section">
+    <h3>Approval Rate</h3>
+    <div class="stat-grid">
+        <div class="stat-card">
+            <div class="stat-value">{{ "%.0f" | format(approval_stats.overall.approval_rate * 100) if approval_stats.overall.approval_rate is not none else "N/A" }}%</div>
+            <div class="stat-label">Overall Approval Rate</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value">{{ approval_stats.overall.total }}</div>
+            <div class="stat-label">Total Reviewed</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value">{{ approval_stats.overall.approved }}</div>
+            <div class="stat-label">Approved As-Is</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value">{{ approval_stats.overall.corrected }}</div>
+            <div class="stat-label">Corrected</div>
+        </div>
+    </div>
+
+    {% if approval_stats.per_folder %}
+    <div class="card stats-table-card">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Folder</th>
+                    <th>Total</th>
+                    <th>Approved</th>
+                    <th>Corrected</th>
+                    <th>Rate</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for folder in approval_stats.per_folder %}
+                <tr>
+                    <td>{{ folder.folder }}</td>
+                    <td>{{ folder.total }}</td>
+                    <td>{{ folder.approved }}</td>
+                    <td>{{ folder.corrected }}</td>
+                    <td>
+                        <span class="{% if folder.approval_rate >= 0.8 %}age-fresh{% elif folder.approval_rate >= 0.5 %}age-warning{% else %}age-overdue{% endif %}">
+                            {{ "%.0f" | format(folder.approval_rate * 100) }}%
+                        </span>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Correction Heatmap -->
+{% if heatmap %}
+<div class="stats-section">
+    <h3>Correction Heatmap</h3>
+    <p class="stats-subtitle">Most common folder corrections (suggested vs approved)</p>
+    <div class="card stats-table-card">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Suggested Folder</th>
+                    <th>Corrected To</th>
+                    <th>Count</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in heatmap %}
+                <tr>
+                    <td>{{ row.from_folder }}</td>
+                    <td>{{ row.to_folder }}</td>
+                    <td>{{ row.count }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+<!-- Confidence Calibration -->
+<div class="stats-section">
+    <h3>Confidence Calibration</h3>
+    <p class="stats-subtitle">Predicted confidence vs actual approval rate</p>
+    <div class="card stats-table-card">
+        <table class="data-table">
+            <thead>
+                <tr>
+                    <th>Confidence Bucket</th>
+                    <th>Count</th>
+                    <th>Approved</th>
+                    <th>Actual Approval</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for bucket in calibration %}
+                <tr>
+                    <td>{{ bucket.bucket }}</td>
+                    <td>{{ bucket.count }}</td>
+                    <td>{{ bucket.approved }}</td>
+                    <td>{{ "%.0f" | format(bucket.approval_rate * 100) if bucket.approval_rate is not none else "-" }}%</td>
+                    <td>
+                        {% if bucket.approval_rate is not none and bucket.count >= 5 %}
+                            {% set low = bucket.bucket.split("-")[0] | float %}
+                            {% set high = bucket.bucket.split("-")[1] | float %}
+                            {% set expected = (low + high) / 2 %}
+                            {% if (bucket.approval_rate - expected) | abs > 0.15 %}
+                                <span class="badge-calibration-warn">
+                                    {{ "Over" if bucket.approval_rate < expected else "Under" }}-confident
+                                </span>
+                            {% else %}
+                                <span class="badge-calibration-ok">Calibrated</span>
+                            {% endif %}
+                        {% else %}
+                            <span class="text-muted">Insufficient data</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Cost Tracking -->
+<div class="stats-section">
+    <h3>API Cost Tracking</h3>
+    <div class="stat-grid">
+        <div class="stat-card">
+            <div class="stat-value">{{ cost.total_requests }}</div>
+            <div class="stat-label">Total API Requests</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value">{{ "{:,}".format(cost.total_input_tokens) }}</div>
+            <div class="stat-label">Input Tokens</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value">{{ "{:,}".format(cost.total_output_tokens) }}</div>
+            <div class="stat-label">Output Tokens</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-value">{{ "{:,}".format(cost.total_input_tokens + cost.total_output_tokens) }}</div>
+            <div class="stat-label">Total Tokens</div>
+        </div>
+    </div>
+</div>
+
+<!-- Learned Preferences -->
+<div class="stats-section">
+    <h3>Learned Preferences</h3>
+    {% if preferences %}
+    <div class="card stats-preferences">
+        <pre>{{ preferences }}</pre>
+    </div>
+    {% else %}
+    <div class="empty-state">
+        <p>No preferences learned yet. Preferences are updated after user corrections.</p>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

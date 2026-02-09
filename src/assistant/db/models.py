@@ -270,6 +270,31 @@ async def init_database(db_path: str | Path) -> None:
             "Check that the directory is writable and the database file is not corrupted."
         ) from e
 
+    # Run Phase 2 migrations (idempotent)
+    await run_phase_2_migrations(db_path)
+
+
+async def run_phase_2_migrations(db_path: str | Path) -> None:
+    """Run Phase 2 schema migrations (idempotent).
+
+    All migrations use CREATE TABLE IF NOT EXISTS and ALTER TABLE
+    wrapped in try/except for "duplicate column" errors.
+    """
+    try:
+        async with aiosqlite.connect(db_path) as db:
+            # Auto-rule match tracking (Sub-Phase C)
+            await db.executescript("""
+                CREATE TABLE IF NOT EXISTS auto_rule_matches (
+                    rule_name TEXT PRIMARY KEY,
+                    match_count INTEGER DEFAULT 0,
+                    last_match_at DATETIME,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            await db.commit()
+    except aiosqlite.Error as e:
+        logger.warning("phase_2_migration_warning", error=str(e))
+
 
 async def get_connection(db_path: str | Path) -> aiosqlite.Connection:
     """Get a database connection with row factory enabled.

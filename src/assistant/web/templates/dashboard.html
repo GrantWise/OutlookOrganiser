@@ -75,9 +75,19 @@
 
     {% if degraded_mode %}
     <div class="error-message" style="margin-top: var(--space-md);">
-        The triage engine is in degraded mode due to consecutive classification failures.
-        Only auto-rules are being applied. Claude classification will resume automatically
-        when the service recovers.
+        <strong>Degraded Mode Active</strong>
+        {% if degraded_reason %}
+        <br>{{ degraded_reason }}
+        {% else %}
+        <br>The triage engine is in degraded mode due to consecutive API failures.
+        Only auto-rules are being applied.
+        {% endif %}
+        {% if degraded_since %}
+        <br><small>Since: {{ degraded_since }}</small>
+        {% endif %}
+        {% if backlog_count and backlog_count > 0 %}
+        <br><small>{{ backlog_count }} emails queued for classification when service recovers.</small>
+        {% endif %}
     </div>
     {% endif %}
 </div>

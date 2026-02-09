@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block title %}Senders - Outlook AI Assistant{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h2>Senders</h2>
+    <p>Manage sender profiles and categorization</p>
+</div>
+
+<!-- Filters -->
+<div class="sender-filters">
+    <form method="get" action="/senders">
+        <label for="category-filter">Category:</label>
+        <select name="category" id="category-filter" onchange="this.form.submit()">
+            <option value="">All</option>
+            <option value="key_contact" {% if filter_category == "key_contact" %}selected{% endif %}>Key Contact</option>
+            <option value="newsletter" {% if filter_category == "newsletter" %}selected{% endif %}>Newsletter</option>
+            <option value="automated" {% if filter_category == "automated" %}selected{% endif %}>Automated</option>
+            <option value="internal" {% if filter_category == "internal" %}selected{% endif %}>Internal</option>
+            <option value="client" {% if filter_category == "client" %}selected{% endif %}>Client</option>
+            <option value="vendor" {% if filter_category == "vendor" %}selected{% endif %}>Vendor</option>
+            <option value="unknown" {% if filter_category == "unknown" %}selected{% endif %}>Unknown</option>
+        </select>
+        <input type="hidden" name="sort" value="{{ sort_by }}">
+        <input type="hidden" name="order" value="{{ sort_order }}">
+    </form>
+</div>
+
+{% if senders %}
+<div class="card stats-table-card">
+    <table class="data-table">
+        <thead>
+            <tr>
+                {% macro sort_header(col, label) %}
+                <th>
+                    <a href="/senders?sort={{ col }}&order={% if sort_by == col and sort_order == 'asc' %}desc{% else %}asc{% endif %}{% if filter_category %}&category={{ filter_category }}{% endif %}"
+                       class="sort-link {% if sort_by == col %}active{% endif %}">
+                        {{ label }}
+                        {% if sort_by == col %}
+                            <span class="sort-arrow">{{ "&darr;" if sort_order == "desc" else "&uarr;" }}</span>
+                        {% endif %}
+                    </a>
+                </th>
+                {% endmacro %}
+                {{ sort_header("email", "Email") }}
+                {{ sort_header("display_name", "Name") }}
+                {{ sort_header("domain", "Domain") }}
+                {{ sort_header("category", "Category") }}
+                <th>Default Folder</th>
+                {{ sort_header("email_count", "Emails") }}
+                {{ sort_header("last_seen", "Last Seen") }}
+            </tr>
+        </thead>
+        <tbody>
+            {% for sender in senders %}
+            <tr id="sender-{{ loop.index }}">
+                <td>{{ sender.email }}</td>
+                <td>{{ sender.display_name or "-" }}</td>
+                <td>{{ sender.domain or "-" }}</td>
+                <td>
+                    <select class="sender-category-select"
+                            onchange="updateSenderCategory('{{ sender.email }}', this.value)">
+                        {% for cat in ["key_contact", "newsletter", "automated", "internal", "client", "vendor", "unknown"] %}
+                        <option value="{{ cat }}" {% if sender.category == cat %}selected{% endif %}>{{ cat | replace("_", " ") | title }}</option>
+                        {% endfor %}
+                    </select>
+                </td>
+                <td>{{ sender.default_folder or "-" }}</td>
+                <td>{{ sender.email_count }}</td>
+                <td>{{ sender.last_seen or "-" }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<!-- Pagination -->
+<div class="pagination">
+    {% if page > 1 %}
+    <a href="/senders?page={{ page - 1 }}&sort={{ sort_by }}&order={{ sort_order }}{% if filter_category %}&category={{ filter_category }}{% endif %}"
+       class="btn btn-sm btn-correct">Previous</a>
+    {% endif %}
+    <span class="pagination-info">Page {{ page }}</span>
+    {% if senders | length == 50 %}
+    <a href="/senders?page={{ page + 1 }}&sort={{ sort_by }}&order={{ sort_order }}{% if filter_category %}&category={{ filter_category }}{% endif %}"
+       class="btn btn-sm btn-correct">Next</a>
+    {% endif %}
+</div>
+
+{% else %}
+<div class="empty-state">
+    <p>No sender profiles found{% if filter_category %} for category "{{ filter_category }}"{% endif %}.</p>
+</div>
+{% endif %}
+
+<script>
+function updateSenderCategory(email, category) {
+    fetch("/api/senders/" + encodeURIComponent(email) + "/category", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ category: category })
+    })
+    .then(function(res) {
+        if (!res.ok) throw new Error("Update failed");
+        var container = document.getElementById("toast-container");
+        var toast = document.createElement("div");
+        toast.className = "toast";
+        toast.textContent = "Category updated for " + email;
+        container.appendChild(toast);
+        setTimeout(function() { toast.remove(); }, 3000);
+    })
+    .catch(function(err) {
+        alert("Failed to update category: " + err.message);
+    });
+}
+</script>
+{% endblock %}

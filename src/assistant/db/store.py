@@ -56,7 +56,7 @@ ActionType = Literal[
     "Scheduled",
 ]
 
-SuggestionStatus = Literal["pending", "approved", "rejected", "partial"]
+SuggestionStatus = Literal["pending", "approved", "rejected", "partial", "auto_approved", "expired"]
 ClassificationStatus = Literal["pending", "classified", "failed"]
 WaitingStatus = Literal["waiting", "received", "expired"]
 SenderCategory = Literal[
@@ -250,6 +250,19 @@ class DatabaseStore:
 
             db.row_factory = aiosqlite.Row
             yield db
+
+    async def checkpoint_wal(self) -> None:
+        """Run a WAL checkpoint to keep WAL file size bounded.
+
+        Uses TRUNCATE mode to reset the WAL file after checkpointing.
+        Safe to call periodically (e.g., at the end of each triage cycle).
+        """
+        try:
+            async with self._db() as db:
+                await db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            logger.debug("wal_checkpoint_complete")
+        except aiosqlite.Error as e:
+            logger.warning("wal_checkpoint_failed", error=str(e))
 
     # =========================================================================
     # Email Operations
@@ -1076,6 +1089,82 @@ class DatabaseStore:
             )
             raise DatabaseError(f"Failed to get pending suggestions by sender: {e}") from e
 
+    async def get_recent_corrections(self, days: int) -> list[dict[str, Any]]:
+        """Get recent user corrections (where approved values differ from suggested).
+
+        Corrections are suggestions where:
+        - status is 'partial' (user modified at least one field)
+        - resolved within the lookback window
+
+        Each row includes both suggested and approved values plus email metadata
+        for context in preference learning.
+
+        Args:
+            days: Number of days to look back
+
+        Returns:
+            List of dicts with correction details
+        """
+        try:
+            cutoff = datetime.now() - timedelta(days=days)
+
+            async with self._db() as db:
+                cursor = await db.execute(
+                    """
+                    SELECT
+                        s.id,
+                        s.email_id,
+                        e.subject,
+                        e.sender_email,
+                        s.suggested_folder,
+                        s.suggested_priority,
+                        s.suggested_action_type,
+                        s.approved_folder,
+                        s.approved_priority,
+                        s.approved_action_type,
+                        s.confidence,
+                        s.resolved_at
+                    FROM suggestions s
+                    JOIN emails e ON s.email_id = e.id
+                    WHERE s.status = 'partial'
+                    AND s.resolved_at >= ?
+                    ORDER BY s.resolved_at DESC
+                    """,
+                    (cutoff.isoformat(),),
+                )
+                rows = await cursor.fetchall()
+                return [dict(row) for row in rows]
+
+        except aiosqlite.Error as e:
+            logger.error("Failed to get recent corrections", days=days, error=str(e))
+            raise DatabaseError(f"Failed to get recent corrections: {e}") from e
+
+    async def get_correction_count_since(self, since: datetime) -> int:
+        """Count corrections since a given timestamp.
+
+        Args:
+            since: Count corrections after this time
+
+        Returns:
+            Number of corrections
+        """
+        try:
+            async with self._db() as db:
+                cursor = await db.execute(
+                    """
+                    SELECT COUNT(*) FROM suggestions
+                    WHERE status = 'partial'
+                    AND resolved_at >= ?
+                    """,
+                    (since.isoformat(),),
+                )
+                row = await cursor.fetchone()
+                return row[0] if row else 0
+
+        except aiosqlite.Error as e:
+            logger.error("Failed to count corrections", error=str(e))
+            raise DatabaseError(f"Failed to count corrections: {e}") from e
+
     async def update_email_inherited_folder(self, email_id: str, folder: str) -> None:
         """Update the inherited_folder field on an email record.
 
@@ -1119,7 +1208,7 @@ class DatabaseStore:
                 cursor = await db.execute(
                     """
                     UPDATE suggestions
-                    SET status = 'rejected',
+                    SET status = 'expired',
                         resolved_at = ?
                     WHERE status = 'pending'
                     AND created_at < ?
@@ -1136,6 +1225,147 @@ class DatabaseStore:
         except aiosqlite.Error as e:
             logger.error("Failed to expire suggestions", error=str(e))
             raise DatabaseError(f"Failed to expire suggestions: {e}") from e
+
+    async def get_auto_approvable_suggestions(
+        self,
+        min_confidence: float,
+        min_age_hours: int,
+    ) -> list[Suggestion]:
+        """Find pending suggestions eligible for auto-approval.
+
+        Suggestions must be pending for at least min_age_hours. P1 suggestions
+        are never auto-approved regardless of confidence (always require human
+        review).
+
+        Does NOT update status — caller must mark approved after Graph API
+        moves succeed (C4: DB-after-Graph pattern).
+
+        Args:
+            min_confidence: Minimum confidence score for auto-approval
+            min_age_hours: Hours a suggestion must be pending before auto-approving
+
+        Returns:
+            List of eligible Suggestion objects
+        """
+        try:
+            cutoff = datetime.now() - timedelta(hours=min_age_hours)
+
+            async with self._db() as db:
+                cursor = await db.execute(
+                    """
+                    SELECT * FROM suggestions
+                    WHERE status = 'pending'
+                    AND confidence >= ?
+                    AND created_at < ?
+                    AND suggested_priority != 'P1 - Urgent Important'
+                    """,
+                    (min_confidence, cutoff.isoformat()),
+                )
+                rows = await cursor.fetchall()
+
+                if not rows:
+                    return []
+
+                return [self._row_to_suggestion(row) for row in rows]
+
+        except aiosqlite.Error as e:
+            logger.error("Failed to query auto-approvable suggestions", error=str(e))
+            raise DatabaseError(f"Failed to query auto-approvable suggestions: {e}") from e
+
+    async def mark_suggestion_auto_approved(self, suggestion_id: int) -> bool:
+        """Mark a single suggestion as auto-approved after Graph API move succeeds.
+
+        C4: Only called after the Graph API move has already succeeded,
+        ensuring DB state always reflects actual email location.
+
+        Args:
+            suggestion_id: The suggestion ID to approve
+
+        Returns:
+            True if the suggestion was updated, False if already resolved
+        """
+        try:
+            async with self._db() as db:
+                cursor = await db.execute(
+                    """
+                    UPDATE suggestions
+                    SET status = 'auto_approved',
+                        approved_folder = suggested_folder,
+                        approved_priority = suggested_priority,
+                        approved_action_type = suggested_action_type,
+                        resolved_at = ?
+                    WHERE id = ? AND status = 'pending'
+                    """,
+                    (datetime.now().isoformat(), suggestion_id),
+                )
+                await db.commit()
+                return cursor.rowcount > 0
+
+        except aiosqlite.Error as e:
+            logger.error(
+                "Failed to mark suggestion auto-approved",
+                suggestion_id=suggestion_id,
+                error=str(e),
+            )
+            raise DatabaseError(
+                f"Failed to mark suggestion {suggestion_id} auto-approved: {e}"
+            ) from e
+
+    async def revert_suggestion_to_pending(self, suggestion_id: int) -> None:
+        """Revert an auto-approved suggestion back to pending.
+
+        Used when Graph API move fails for an auto-approved suggestion.
+
+        Args:
+            suggestion_id: ID of the suggestion to revert
+        """
+        try:
+            async with self._db() as db:
+                await db.execute(
+                    """
+                    UPDATE suggestions
+                    SET status = 'pending',
+                        approved_folder = NULL,
+                        approved_priority = NULL,
+                        approved_action_type = NULL,
+                        resolved_at = NULL
+                    WHERE id = ?
+                    """,
+                    (suggestion_id,),
+                )
+                await db.commit()
+        except aiosqlite.Error as e:
+            logger.error(
+                "Failed to revert suggestion to pending",
+                suggestion_id=suggestion_id,
+                error=str(e),
+            )
+            raise DatabaseError(f"Failed to revert suggestion {suggestion_id}: {e}") from e
+
+    async def update_email_folder(self, email_id: str, folder: str) -> None:
+        """Update the current_folder of an email.
+
+        Used when delta queries detect a folder change for an existing email.
+
+        Args:
+            email_id: Graph API message ID
+            folder: New folder path
+        """
+        try:
+            async with self._db() as db:
+                await db.execute(
+                    "UPDATE emails SET current_folder = ? WHERE id = ?",
+                    (folder, email_id),
+                )
+                await db.commit()
+        except aiosqlite.Error as e:
+            logger.error(
+                "Failed to update email folder",
+                email_id=email_id[:20],
+                folder=folder,
+                error=str(e),
+            )
+            raise DatabaseError(f"Failed to update email folder: {e}") from e
 
     def _row_to_suggestion(self, row: aiosqlite.Row) -> Suggestion:
         """Convert a database row to a Suggestion dataclass."""
@@ -1232,31 +1462,68 @@ class DatabaseStore:
         self,
         waiting_for_id: int,
         status: WaitingStatus = "received",
-    ) -> None:
-        """Resolve a waiting-for item.
+    ) -> bool:
+        """Resolve a waiting-for item (idempotent).
+
+        H5: Only updates items that are still in 'waiting' status. Returns
+        False if the item was already resolved, preventing double resolution.
 
         Args:
             waiting_for_id: The waiting-for ID
             status: Resolution status ('received' or 'expired')
+
+        Returns:
+            True if the item was actually resolved, False if already resolved
         """
         try:
             async with self._db() as db:
-                await db.execute(
+                cursor = await db.execute(
                     """
                     UPDATE waiting_for
                     SET status = ?,
                         resolved_at = ?
-                    WHERE id = ?
+                    WHERE id = ? AND status = 'waiting'
                     """,
                     (status, datetime.now().isoformat(), waiting_for_id),
                 )
                 await db.commit()
+                return cursor.rowcount > 0
 
         except aiosqlite.Error as e:
             logger.error(
                 "Failed to resolve waiting-for", waiting_for_id=waiting_for_id, error=str(e)
             )
             raise DatabaseError(f"Failed to resolve waiting-for: {e}") from e
+
+    async def extend_waiting_for_deadline(
+        self,
+        waiting_for_id: int,
+        additional_hours: int,
+    ) -> None:
+        """Extend a waiting-for item's nudge deadline.
+
+        Args:
+            waiting_for_id: The waiting-for ID
+            additional_hours: Hours to add to the nudge_after_hours
+        """
+        try:
+            async with self._db() as db:
+                await db.execute(
+                    """
+                    UPDATE waiting_for
+                    SET nudge_after_hours = nudge_after_hours + ?
+                    WHERE id = ? AND status = 'waiting'
+                    """,
+                    (additional_hours, waiting_for_id),
+                )
+                await db.commit()
+        except aiosqlite.Error as e:
+            logger.error(
+                "Failed to extend waiting-for deadline",
+                waiting_for_id=waiting_for_id,
+                error=str(e),
+            )
+            raise DatabaseError(f"Failed to extend waiting-for deadline: {e}") from e
 
     async def check_waiting_for_by_conversation(self, conversation_id: str) -> WaitingFor | None:
         """Check if there's an active waiting-for for a conversation.
@@ -1370,6 +1637,59 @@ class DatabaseStore:
         except aiosqlite.Error as e:
             logger.error("Failed to delete state", key=key, error=str(e))
             raise DatabaseError(f"Failed to delete state: {e}") from e
+
+    # =========================================================================
+    # Auto-Rule Match Tracking (Phase 2 - Feature 2F)
+    # =========================================================================
+
+    async def record_auto_rule_match(self, rule_name: str) -> None:
+        """Record that an auto-rule matched an email.
+
+        Upserts the match count for tracking rule health and stale detection.
+
+        Args:
+            rule_name: Name of the auto-rule that matched
+        """
+        try:
+            async with self._db() as db:
+                await db.execute(
+                    """
+                    INSERT INTO auto_rule_matches (rule_name, match_count, last_match_at, updated_at)
+                    VALUES (?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    ON CONFLICT(rule_name) DO UPDATE SET
+                        match_count = match_count + 1,
+                        last_match_at = CURRENT_TIMESTAMP,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (rule_name,),
+                )
+                await db.commit()
+        except aiosqlite.Error as e:
+            # Non-fatal — don't break triage for tracking failures
+            logger.warning("record_auto_rule_match_failed", rule_name=rule_name, error=str(e))
+
+    async def get_auto_rule_match_counts(self) -> dict[str, dict[str, Any]]:
+        """Get match counts and last match times for all tracked auto-rules.
+
+        Returns:
+            Dict mapping rule_name -> {match_count, last_match_at}
+        """
+        try:
+            async with self._db() as db:
+                cursor = await db.execute(
+                    "SELECT rule_name, match_count, last_match_at FROM auto_rule_matches"
+                )
+                rows = await cursor.fetchall()
+                return {
+                    row["rule_name"]: {
+                        "match_count": row["match_count"],
+                        "last_match_at": row["last_match_at"],
+                    }
+                    for row in rows
+                }
+        except aiosqlite.Error as e:
+            logger.error("get_auto_rule_match_counts_failed", error=str(e))
+            raise DatabaseError(f"Failed to get auto-rule match counts: {e}") from e
 
     # =========================================================================
     # Sender Profile Operations
@@ -2333,6 +2653,422 @@ class DatabaseStore:
             logger.error("Failed to get stats", error=str(e))
             raise DatabaseError(f"Failed to get stats: {e}") from e
 
+    async def get_overdue_replies(
+        self,
+        warning_hours: int = 24,
+        critical_hours: int = 48,
+    ) -> list[dict[str, Any]]:
+        """Get emails with action_type 'Needs Reply' past warning threshold.
+
+        Args:
+            warning_hours: Hours before warning level
+            critical_hours: Hours before critical level
+
+        Returns:
+            List of overdue email dicts with level ('warning' or 'critical')
+        """
+        try:
+            async with self._db() as db:
+                warning_cutoff = (datetime.now() - timedelta(hours=warning_hours)).isoformat()
+                cursor = await db.execute(
+                    """
+                    SELECT e.id, e.subject, e.sender_email, e.sender_name,
+                           e.received_at, s.suggested_action_type, s.approved_action_type
+                    FROM emails e
+                    JOIN suggestions s ON s.email_id = e.id
+                    WHERE (s.approved_action_type = 'Needs Reply'
+                           OR (s.approved_action_type IS NULL
+                               AND s.suggested_action_type = 'Needs Reply'))
+                    AND s.status IN ('approved', 'partial')
+                    AND e.received_at < ?
+                    ORDER BY e.received_at ASC
+                    """,
+                    (warning_cutoff,),
+                )
+                rows = await cursor.fetchall()
+
+                results = []
+                for row in rows:
+                    received = row["received_at"]
+                    if received:
+                        age_hours = (
+                            datetime.now() - datetime.fromisoformat(received)
+                        ).total_seconds() / 3600
+                        level = "critical" if age_hours >= critical_hours else "warning"
+                    else:
+                        level = "warning"
+
+                    results.append(
+                        {
+                            "id": row["id"],
+                            "subject": row["subject"],
+                            "sender_email": row["sender_email"],
+                            "sender_name": row["sender_name"],
+                            "received_at": received,
+                            "level": level,
+                        }
+                    )
+
+                return results
+
+        except aiosqlite.Error as e:
+            logger.error("Failed to get overdue replies", error=str(e))
+            raise DatabaseError(f"Failed to get overdue replies: {e}") from e
+
+    async def get_processing_stats(self, since: datetime) -> dict[str, Any]:
+        """Get processing statistics since a given time.
+
+        Args:
+            since: Start time for stats window
+
+        Returns:
+            Dict with counts for classifications, auto-rules, failures
+        """
+        try:
+            async with self._db() as db:
+                # Use space separator to match SQLite's CURRENT_TIMESTAMP format
+                since_str = since.strftime("%Y-%m-%d %H:%M:%S")
+
+                # Count by action type from action_log
+                cursor = await db.execute(
+                    """
+                    SELECT action_type, triggered_by, COUNT(*) as count
+                    FROM action_log
+                    WHERE timestamp > ?
+                    GROUP BY action_type, triggered_by
+                    """,
+                    (since_str,),
+                )
+                rows = await cursor.fetchall()
+
+                stats: dict[str, int] = {
+                    "classified": 0,
+                    "auto_ruled": 0,
+                    "auto_approved": 0,
+                    "user_approved": 0,
+                    "rejected": 0,
+                    "failed": 0,
+                }
+                for row in rows:
+                    action = row["action_type"]
+                    triggered = row["triggered_by"]
+                    count = row["count"]
+
+                    if action == "classify" and triggered == "auto":
+                        stats["auto_ruled"] += count
+                    elif action == "classify":
+                        stats["classified"] += count
+                    elif action == "move" and triggered == "auto_approved":
+                        stats["auto_approved"] += count
+                    elif action == "move" and triggered == "user_approved":
+                        stats["user_approved"] += count
+                    elif action == "reject":
+                        stats["rejected"] += count
+
+                # Count failed classifications
+                cursor = await db.execute(
+                    """
+                    SELECT COUNT(*) as count FROM emails
+                    WHERE classification_status = 'failed'
+                    AND processed_at > ?
+                    """,
+                    (since_str,),
+                )
+                row = await cursor.fetchone()
+                stats["failed"] = row["count"] if row else 0
+
+                return stats
+
+        except aiosqlite.Error as e:
+            logger.error("Failed to get processing stats", error=str(e))
+            raise DatabaseError(f"Failed to get processing stats: {e}") from e
+
+    async def get_approval_stats(self, days: int = 30) -> dict[str, Any]:
+        """Get approval/correction rates overall and per-folder.
+
+        Args:
+            days: Lookback window in days
+
+        Returns:
+            Dict with overall and per-folder approval stats
+        """
+        try:
+            async with self._db() as db:
+                cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+
+                # Overall approval stats
+                cursor = await db.execute(
+                    """
+                    SELECT status, COUNT(*) as count
+                    FROM suggestions
+                    WHERE resolved_at > ? OR (status = 'pending' AND created_at > ?)
+                    GROUP BY status
+                    """,
+                    (cutoff, cutoff),
+                )
+                rows = await cursor.fetchall()
+                overall = {row["status"]: row["count"] for row in rows}
+
+                # Per-folder correction rates
+                cursor = await db.execute(
+                    """
+                    SELECT suggested_folder,
+                           COUNT(*) as total,
+                           SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) as approved,
+                           SUM(CASE WHEN status = 'partial' THEN 1 ELSE 0 END) as corrected
+                    FROM suggestions
+                    WHERE resolved_at > ?
+                    GROUP BY suggested_folder
+                    ORDER BY total DESC
+                    LIMIT 20
+                    """,
+                    (cutoff,),
+                )
+                per_folder = [
+                    {
+                        "folder": row["suggested_folder"],
+                        "total": row["total"],
+                        "approved": row["approved"],
+                        "corrected": row["corrected"],
+                        "approval_rate": row["approved"] / row["total"] if row["total"] > 0 else 0,
+                    }
+                    for row in await cursor.fetchall()
+                ]
+
+                return {"overall": overall, "per_folder": per_folder}
+
+        except aiosqlite.Error as e:
+            logger.error("Failed to get approval stats", error=str(e))
+            raise DatabaseError(f"Failed to get approval stats: {e}") from e
+
+    async def get_correction_heatmap(self, days: int = 30) -> list[dict[str, Any]]:
+        """Get most common suggested -> approved transitions.
+
+        Args:
+            days: Lookback window in days
+
+        Returns:
+            List of correction transition dicts
+        """
+        try:
+            async with self._db() as db:
+                cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+                cursor = await db.execute(
+                    """
+                    SELECT suggested_folder, approved_folder, COUNT(*) as count
+                    FROM suggestions
+                    WHERE status = 'partial'
+                    AND resolved_at > ?
+                    AND suggested_folder != approved_folder
+                    GROUP BY suggested_folder, approved_folder
+                    ORDER BY count DESC
+                    LIMIT 20
+                    """,
+                    (cutoff,),
+                )
+                return [
+                    {
+                        "from_folder": row["suggested_folder"],
+                        "to_folder": row["approved_folder"],
+                        "count": row["count"],
+                    }
+                    for row in await cursor.fetchall()
+                ]
+
+        except aiosqlite.Error as e:
+            logger.error("Failed to get correction heatmap", error=str(e))
+            raise DatabaseError(f"Failed to get correction heatmap: {e}") from e
+
+    async def get_confidence_calibration(self, days: int = 30) -> list[dict[str, Any]]:
+        """Get confidence calibration data (predicted vs actual by bucket).
+
+        Buckets: 0.5-0.6, 0.6-0.7, 0.7-0.8, 0.8-0.9, 0.9-1.0
+
+        Args:
+            days: Lookback window in days
+
+        Returns:
+            List of calibration bucket dicts
+        """
+        try:
+            async with self._db() as db:
+                cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+                cursor = await db.execute(
+                    """
+                    SELECT confidence, status
+                    FROM suggestions
+                    WHERE resolved_at > ?
+                    AND confidence IS NOT NULL
+                    AND status IN ('approved', 'partial', 'rejected')
+                    """,
+                    (cutoff,),
+                )
+                rows = await cursor.fetchall()
+
+                # Build buckets
+                buckets = {
+                    "0.5-0.6": {"count": 0, "approved": 0},
+                    "0.6-0.7": {"count": 0, "approved": 0},
+                    "0.7-0.8": {"count": 0, "approved": 0},
+                    "0.8-0.9": {"count": 0, "approved": 0},
+                    "0.9-1.0": {"count": 0, "approved": 0},
+                }
+
+                for row in rows:
+                    conf = row["confidence"]
+                    if conf < 0.5:
+                        continue
+                    elif conf < 0.6:
+                        bucket = "0.5-0.6"
+                    elif conf < 0.7:
+                        bucket = "0.6-0.7"
+                    elif conf < 0.8:
+                        bucket = "0.7-0.8"
+                    elif conf < 0.9:
+                        bucket = "0.8-0.9"
+                    else:
+                        bucket = "0.9-1.0"
+
+                    buckets[bucket]["count"] += 1
+                    if row["status"] == "approved":
+                        buckets[bucket]["approved"] += 1
+
+                result = []
+                for bucket_name, data in buckets.items():
+                    approval_rate = data["approved"] / data["count"] if data["count"] > 0 else None
+                    result.append(
+                        {
+                            "bucket": bucket_name,
+                            "count": data["count"],
+                            "approved": data["approved"],
+                            "approval_rate": approval_rate,
+                        }
+                    )
+
+                return result
+
+        except aiosqlite.Error as e:
+            logger.error("Failed to get confidence calibration", error=str(e))
+            raise DatabaseError(f"Failed to get confidence calibration: {e}") from e
+
+    async def get_cost_tracking(self, days: int = 30) -> dict[str, Any]:
+        """Get token usage from llm_request_log.
+
+        Args:
+            days: Lookback window in days
+
+        Returns:
+            Dict with token usage stats
+        """
+        try:
+            async with self._db() as db:
+                cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+                cursor = await db.execute(
+                    """
+                    SELECT
+                        COUNT(*) as total_requests,
+                        COALESCE(SUM(input_tokens), 0) as total_input_tokens,
+                        COALESCE(SUM(output_tokens), 0) as total_output_tokens,
+                        COALESCE(AVG(duration_ms), 0) as avg_duration_ms,
+                        SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) as errors
+                    FROM llm_request_log
+                    WHERE timestamp > ?
+                    """,
+                    (cutoff,),
+                )
+                row = await cursor.fetchone()
+
+                return {
+                    "total_requests": row["total_requests"] if row else 0,
+                    "total_input_tokens": row["total_input_tokens"] if row else 0,
+                    "total_output_tokens": row["total_output_tokens"] if row else 0,
+                    "avg_duration_ms": int(row["avg_duration_ms"]) if row else 0,
+                    "errors": row["errors"] if row else 0,
+                }
+
+        except aiosqlite.Error as e:
+            logger.error("Failed to get cost tracking", error=str(e))
+            raise DatabaseError(f"Failed to get cost tracking: {e}") from e
+
+    async def list_sender_profiles(
+        self,
+        category: str | None = None,
+        sort_by: str = "email_count",
+        sort_order: str = "desc",
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[SenderProfile]:
+        """List sender profiles with optional filtering and sorting.
+
+        Args:
+            category: Filter by category (None for all)
+            sort_by: Column to sort by
+            sort_order: 'asc' or 'desc'
+            limit: Max results
+            offset: Skip first N results
+
+        Returns:
+            List of SenderProfile dataclasses
+        """
+        try:
+            async with self._db() as db:
+                # Whitelist sort columns to prevent injection
+                allowed_sort = {
+                    "email",
+                    "display_name",
+                    "domain",
+                    "category",
+                    "email_count",
+                    "last_seen",
+                    "auto_rule_candidate",
+                }
+                if sort_by not in allowed_sort:
+                    sort_by = "email_count"
+                if sort_order not in ("asc", "desc"):
+                    sort_order = "desc"
+
+                query = "SELECT * FROM sender_profiles"
+                params: list[Any] = []
+
+                if category:
+                    query += " WHERE category = ?"
+                    params.append(category)
+
+                query += f" ORDER BY {sort_by} {sort_order} LIMIT ? OFFSET ?"
+                params.extend([limit, offset])
+
+                cursor = await db.execute(query, params)
+                rows = await cursor.fetchall()
+
+                return [self._row_to_sender_profile(row) for row in rows]
+
+        except aiosqlite.Error as e:
+            logger.error("Failed to list sender profiles", error=str(e))
+            raise DatabaseError(f"Failed to list sender profiles: {e}") from e
+
+    async def update_sender_category(self, email: str, category: SenderCategory) -> None:
+        """Update a sender's category.
+
+        Args:
+            email: Sender email address
+            category: New category value
+        """
+        try:
+            async with self._db() as db:
+                await db.execute(
+                    """
+                    UPDATE sender_profiles
+                    SET category = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE email = ?
+                    """,
+                    (category, email),
+                )
+                await db.commit()
+
+        except aiosqlite.Error as e:
+            logger.error("Failed to update sender category", error=str(e))
+            raise DatabaseError(f"Failed to update sender category: {e}") from e
+
     # =========================================================================
     # Database Maintenance Operations
     # =========================================================================
@@ -2373,31 +3109,44 @@ class DatabaseStore:
         self,
         days: int,
         limit: int = 10000,
+        status: str | None = None,
     ) -> list[Email]:
-        """Get emails from the last N days.
+        """Get emails from the last N days, optionally filtered by classification status.
 
-        Used by dry-run to load previously bootstrapped emails.
+        Used by dry-run to load previously bootstrapped emails, and by backlog
+        processing to find pending emails accumulated during degraded mode.
 
         Args:
             days: Number of days to look back
             limit: Maximum number of emails to return
+            status: Optional classification_status filter (e.g., 'pending')
 
         Returns:
-            List of Email dataclasses ordered by received_at desc
+            List of Email dataclasses ordered by received_at ASC (FIFO for backlog)
         """
         try:
             cutoff = datetime.now() - timedelta(days=days)
 
-            async with self._db() as db:
-                cursor = await db.execute(
-                    """
+            if status:
+                query = """
+                    SELECT * FROM emails
+                    WHERE received_at >= ?
+                    AND classification_status = ?
+                    ORDER BY received_at ASC
+                    LIMIT ?
+                """
+                params: tuple[Any, ...] = (cutoff.isoformat(), status, limit)
+            else:
+                query = """
                     SELECT * FROM emails
                     WHERE received_at >= ?
                     ORDER BY received_at DESC
                     LIMIT ?
-                    """,
-                    (cutoff.isoformat(), limit),
-                )
+                """
+                params = (cutoff.isoformat(), limit)
+
+            async with self._db() as db:
+                cursor = await db.execute(query, params)
                 rows = await cursor.fetchall()
                 return [self._row_to_email(row) for row in rows]
 

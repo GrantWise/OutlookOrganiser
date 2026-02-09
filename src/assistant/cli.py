@@ -815,6 +815,122 @@ async def _migrate_to_immutable_ids(store, graph_client, output_console=None) ->
         output_console.print(f"[green]✓ {summary}[/green]")
 
 
+@cli.command("rules")
+@click.option(
+    "--audit",
+    is_flag=True,
+    help="Run auto-rules health audit",
+)
+def rules(audit: bool) -> None:
+    """Manage auto-rules.
+
+    With --audit, checks for conflicts, stale rules, and rule count limits.
+    """
+    if audit:
+        try:
+            asyncio.run(_run_rules_audit())
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Cancelled.[/yellow]")
+            sys.exit(130)
+        except SystemExit:
+            raise
+        except Exception as e:
+            console.print(f"\n[red]Error:[/red] {e}")
+            sys.exit(1)
+    else:
+        console.print("Use [cyan]--audit[/cyan] to run auto-rules health check.")
+
+
+async def _run_rules_audit() -> None:
+    """Async implementation of rules audit command."""
+    from assistant.classifier.auto_rules import audit_report
+
+    deps = await _init_cli_deps()
+
+    match_counts = await deps.store.get_auto_rule_match_counts()
+    report = audit_report(
+        rules=deps.config.auto_rules,
+        match_counts=match_counts,
+        max_rules=deps.config.auto_rules_hygiene.max_rules,
+        threshold_days=deps.config.auto_rules_hygiene.consolidation_check_days,
+    )
+
+    console.print("[bold]Auto-Rules Audit Report[/bold]\n")
+    console.print(f"  Total rules: {report.total_rules} / {report.max_rules}")
+
+    if report.over_limit:
+        console.print(
+            f"  [red]WARNING: Over limit ({report.total_rules} > {report.max_rules})[/red]"
+        )
+
+    if report.conflicts:
+        console.print(f"\n  [yellow]Conflicts ({len(report.conflicts)}):[/yellow]")
+        for c in report.conflicts:
+            console.print(f"    - {c.rule_a} <-> {c.rule_b} ({c.overlap_type} overlap)")
+    else:
+        console.print("\n  [green]No conflicts detected.[/green]")
+
+    if report.stale_rules:
+        console.print(f"\n  [yellow]Stale rules ({len(report.stale_rules)}):[/yellow]")
+        for name in report.stale_rules:
+            console.print(f"    - {name}")
+    else:
+        console.print("  [green]No stale rules.[/green]")
+
+    console.print()
+
+
+@cli.command("digest")
+@click.option(
+    "--stdout",
+    "delivery",
+    flag_value="stdout",
+    default=True,
+    help="Print digest to stdout (default)",
+)
+@click.option(
+    "--file",
+    "delivery",
+    flag_value="file",
+    help="Write digest to data/ directory",
+)
+def digest(delivery: str) -> None:
+    """Generate a daily digest report.
+
+    Summarizes overdue replies, waiting-for items, processing stats,
+    and pending suggestions.
+    """
+    try:
+        asyncio.run(_run_digest(delivery))
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Cancelled.[/yellow]")
+        sys.exit(130)
+    except SystemExit:
+        raise
+    except Exception as e:
+        console.print(f"\n[red]Error:[/red] {e}")
+        sys.exit(1)
+
+
+async def _run_digest(delivery: str) -> None:
+    """Async implementation of digest command."""
+    import anthropic as anthropic_mod
+
+    from assistant.engine.digest import DigestGenerator
+
+    deps = await _init_cli_deps()
+
+    async_client = anthropic_mod.AsyncAnthropic(max_retries=3)
+    generator = DigestGenerator(
+        store=deps.store,
+        anthropic_client=async_client,
+        config=deps.config,
+    )
+
+    result = await generator.generate()
+    await generator.deliver(result, mode=delivery)
+
+
 def main() -> None:
     """Entry point for the CLI."""
     cli()

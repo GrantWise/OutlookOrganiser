@@ -20,8 +20,9 @@ Usage:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from fnmatch import fnmatch
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from assistant.core.logging import get_logger
 
@@ -153,3 +154,192 @@ def _match_subjects(subject_lower: str, keywords: list[str]) -> bool:
         True if any keyword is found in the subject
     """
     return any(keyword.lower() in subject_lower for keyword in keywords)
+
+
+# ---------------------------------------------------------------------------
+# Rule conflict and hygiene (Phase 2 - Features 2E + 2F)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RuleConflict:
+    """Overlap between two auto-rules."""
+
+    rule_a: str
+    rule_b: str
+    overlap_type: str  # 'sender' or 'subject'
+
+
+@dataclass(frozen=True)
+class RulesAuditReport:
+    """Health report for auto-rules configuration."""
+
+    total_rules: int
+    max_rules: int
+    conflicts: list[RuleConflict]
+    stale_rules: list[str]
+    over_limit: bool
+
+
+def create_rule_from_sender(
+    sender_email: str,
+    folder: str,
+    priority: str,
+    action_type: str,
+    rule_name: str | None = None,
+) -> dict[str, Any]:
+    """Create an auto-rule config dict from sender affinity data.
+
+    Args:
+        sender_email: Email address to match
+        folder: Target folder path
+        priority: Priority level
+        action_type: Action type category
+        rule_name: Optional rule name (auto-generated if None)
+
+    Returns:
+        Dict suitable for AutoRuleConfig validation
+    """
+    if not rule_name:
+        domain = sender_email.split("@")[-1] if "@" in sender_email else sender_email
+        rule_name = f"auto-{domain}"
+
+    return {
+        "name": rule_name,
+        "match": {"senders": [sender_email.lower()]},
+        "action": {
+            "folder": folder,
+            "category": action_type,
+            "priority": priority,
+        },
+    }
+
+
+def check_duplicate_rule(
+    sender_email: str,
+    rules: list[AutoRuleConfig],
+) -> AutoRuleConfig | None:
+    """Check if an auto-rule already exists for this sender.
+
+    Args:
+        sender_email: Sender email to check
+        rules: Existing auto-rules
+
+    Returns:
+        The matching rule if found, None otherwise
+    """
+    sender_lower = sender_email.lower()
+    for rule in rules:
+        if any(fnmatch(sender_lower, p.lower()) for p in rule.match.senders):
+            return rule
+    return None
+
+
+def detect_conflicts(rules: list[AutoRuleConfig]) -> list[RuleConflict]:
+    """Detect overlapping patterns across auto-rules.
+
+    Two rules conflict if they share sender patterns or subject keywords
+    that could match the same email but route to different folders.
+
+    Args:
+        rules: Auto-rules to check
+
+    Returns:
+        List of detected conflicts
+    """
+    conflicts: list[RuleConflict] = []
+
+    for i, rule_a in enumerate(rules):
+        for rule_b in rules[i + 1 :]:
+            # Skip if they route to the same folder (not a conflict)
+            if rule_a.action.folder == rule_b.action.folder:
+                continue
+
+            # Check sender overlap
+            for sender_a in rule_a.match.senders:
+                for sender_b in rule_b.match.senders:
+                    if fnmatch(sender_a.lower(), sender_b.lower()) or fnmatch(
+                        sender_b.lower(), sender_a.lower()
+                    ):
+                        conflicts.append(
+                            RuleConflict(
+                                rule_a=rule_a.name,
+                                rule_b=rule_b.name,
+                                overlap_type="sender",
+                            )
+                        )
+                        break
+
+            # Check subject overlap
+            for subj_a in rule_a.match.subjects:
+                for subj_b in rule_b.match.subjects:
+                    if subj_a.lower() in subj_b.lower() or subj_b.lower() in subj_a.lower():
+                        conflicts.append(
+                            RuleConflict(
+                                rule_a=rule_a.name,
+                                rule_b=rule_b.name,
+                                overlap_type="subject",
+                            )
+                        )
+                        break
+
+    return conflicts
+
+
+def detect_stale_rules(
+    rules: list[AutoRuleConfig],
+    match_counts: dict[str, dict[str, Any]],
+    threshold_days: int = 30,
+) -> list[str]:
+    """Detect rules with zero matches in the threshold period.
+
+    Args:
+        rules: Auto-rules to check
+        match_counts: Match data from store.get_auto_rule_match_counts()
+        threshold_days: Days of inactivity before flagging
+
+    Returns:
+        List of stale rule names
+    """
+    stale: list[str] = []
+    now = datetime.now()
+
+    for rule in rules:
+        counts = match_counts.get(rule.name)
+        if not counts or counts["match_count"] == 0:
+            stale.append(rule.name)
+        elif counts["last_match_at"]:
+            try:
+                last = datetime.fromisoformat(counts["last_match_at"])
+                if (now - last).days > threshold_days:
+                    stale.append(rule.name)
+            except (ValueError, TypeError):
+                stale.append(rule.name)
+
+    return stale
+
+
+def audit_report(
+    rules: list[AutoRuleConfig],
+    match_counts: dict[str, dict[str, Any]],
+    max_rules: int = 100,
+    threshold_days: int = 30,
+) -> RulesAuditReport:
+    """Generate a comprehensive auto-rules health report.
+
+    Args:
+        rules: Auto-rules configuration
+        match_counts: Match data from store
+        max_rules: Maximum recommended rules
+        threshold_days: Stale threshold in days
+
+    Returns:
+        RulesAuditReport with all findings
+    """
+    return RulesAuditReport(
+        total_rules=len(rules),
+        max_rules=max_rules,
+        conflicts=detect_conflicts(rules),
+        stale_rules=detect_stale_rules(rules, match_counts, threshold_days),
+        over_limit=len(rules) > max_rules,
+    )

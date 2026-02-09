@@ -80,6 +80,28 @@ class ChatRequest(BaseModel):
     messages: list[dict[str, Any]]
 
 
+class CreateAutoRuleRequest(BaseModel):
+    """Request body for creating an auto-rule from sender affinity."""
+
+    sender_email: str
+    folder: str
+    priority: str
+    action_type: str
+    rule_name: str | None = None
+
+
+class UpdateSenderCategoryRequest(BaseModel):
+    """Request body for updating a sender's category."""
+
+    category: str
+
+
+class UpdateSenderFolderRequest(BaseModel):
+    """Request body for updating a sender's default folder."""
+
+    folder: str
+
+
 # ---------------------------------------------------------------------------
 # Shared Graph API operations
 # ---------------------------------------------------------------------------
@@ -334,6 +356,7 @@ async def dashboard(
 
     triage_engine = request.app.state.triage_engine
     degraded_mode = triage_engine.degraded_mode if triage_engine else False
+    degradation = triage_engine.degradation_state if triage_engine else None
 
     return templates.TemplateResponse(
         request,
@@ -345,6 +368,11 @@ async def dashboard(
             "last_cycle": last_cycle_dt,
             "last_cycle_ago": _time_ago(last_cycle_dt),
             "degraded_mode": degraded_mode,
+            "degraded_reason": degradation.degraded_reason if degradation else None,
+            "degraded_since": _time_ago(degradation.degraded_since)
+            if degradation and degradation.degraded_since
+            else None,
+            "backlog_count": stats.get("pending_emails", 0),
             "interval_minutes": config.triage.interval_minutes,
             "nav_active": "dashboard",
         },
@@ -449,6 +477,104 @@ async def waiting_for(
         {
             "items": items,
             "nav_active": "waiting",
+        },
+    )
+
+
+@page_router.get("/stats", response_class=HTMLResponse)
+async def stats_page(
+    request: Request,
+    store: DatabaseStore = Depends(get_store),
+    config: AppConfig = Depends(get_config),  # noqa: B008
+):
+    """Statistics dashboard page."""
+    days = 30
+
+    raw_stats = await store.get_approval_stats(days)
+    heatmap = await store.get_correction_heatmap(days)
+    calibration = await store.get_confidence_calibration(days)
+    cost = await store.get_cost_tracking(days)
+    preferences = await store.get_state("classification_preferences")
+
+    # Transform overall stats from {status: count} to structured dict
+    overall_raw = raw_stats.get("overall", {})
+    approved = overall_raw.get("approved", 0)
+    corrected = overall_raw.get("partial", 0)
+    rejected = overall_raw.get("rejected", 0)
+    total = approved + corrected + rejected
+    approval_stats = {
+        "overall": {
+            "total": total,
+            "approved": approved,
+            "corrected": corrected,
+            "approval_rate": approved / total if total > 0 else None,
+        },
+        "per_folder": raw_stats.get("per_folder", []),
+    }
+
+    # Check calibration alerts (>15% divergence)
+    calibration_alerts = []
+    for bucket in calibration:
+        if bucket["approval_rate"] is not None and bucket["count"] >= 5:
+            # Parse bucket midpoint for expected rate
+            low = float(bucket["bucket"].split("-")[0])
+            high = float(bucket["bucket"].split("-")[1])
+            expected = (low + high) / 2
+            actual = bucket["approval_rate"]
+            if abs(actual - expected) > 0.15:
+                direction = "over-confident" if actual < expected else "under-confident"
+                calibration_alerts.append(
+                    f"Bucket {bucket['bucket']}: {direction} "
+                    f"(expected ~{expected:.0%}, actual {actual:.0%})"
+                )
+
+    return templates.TemplateResponse(
+        request,
+        "stats.html",
+        {
+            "nav_active": "stats",
+            "days": days,
+            "approval_stats": approval_stats,
+            "heatmap": heatmap,
+            "calibration": calibration,
+            "calibration_alerts": calibration_alerts,
+            "cost": cost,
+            "preferences": preferences,
+        },
+    )
+
+
+@page_router.get("/senders", response_class=HTMLResponse)
+async def senders_page(
+    request: Request,
+    store: DatabaseStore = Depends(get_store),
+    category: str | None = None,
+    sort: str = "email_count",
+    order: str = "desc",
+    page: int = 1,
+):
+    """Sender management page."""
+    per_page = 50
+    offset = (page - 1) * per_page
+
+    senders = await store.list_sender_profiles(
+        category=category,
+        sort_by=sort,
+        sort_order=order,
+        limit=per_page,
+        offset=offset,
+    )
+
+    return templates.TemplateResponse(
+        request,
+        "senders.html",
+        {
+            "nav_active": "senders",
+            "senders": senders,
+            "filter_category": category,
+            "sort_by": sort,
+            "sort_order": order,
+            "page": page,
         },
     )
 
@@ -604,14 +730,21 @@ async def approve_suggestion(
         graph_error = move_result["graph_error"]
         task_info = move_result.get("task_info")
 
-        # Record task_sync if task was created
+        # Record task_sync if task was created (R3: non-fatal on failure)
         if task_info:
-            await store.create_task_sync(
-                email_id=suggestion.email_id,
-                todo_task_id=task_info["todo_task_id"],
-                todo_list_id=task_info["todo_list_id"],
-                task_type=task_info["task_type"],
-            )
+            try:
+                await store.create_task_sync(
+                    email_id=suggestion.email_id,
+                    todo_task_id=task_info["todo_task_id"],
+                    todo_list_id=task_info["todo_list_id"],
+                    task_type=task_info["task_type"],
+                )
+            except DatabaseError:
+                logger.warning(
+                    "task_sync_record_failed",
+                    email_id=suggestion.email_id,
+                    todo_task_id=task_info["todo_task_id"],
+                )
 
     # Log action
     await store.log_action(
@@ -724,12 +857,19 @@ async def bulk_approve(
 
                     task_info = move_result.get("task_info")
                     if task_info:
-                        await store.create_task_sync(
-                            email_id=s.email_id,
-                            todo_task_id=task_info["todo_task_id"],
-                            todo_list_id=task_info["todo_list_id"],
-                            task_type=task_info["task_type"],
-                        )
+                        try:
+                            await store.create_task_sync(
+                                email_id=s.email_id,
+                                todo_task_id=task_info["todo_task_id"],
+                                todo_list_id=task_info["todo_list_id"],
+                                task_type=task_info["task_type"],
+                            )
+                        except DatabaseError:
+                            logger.warning(
+                                "task_sync_record_failed",
+                                email_id=s.email_id,
+                                todo_task_id=task_info["todo_task_id"],
+                            )
 
                     if move_result["graph_error"]:
                         logger.warning(
@@ -771,6 +911,43 @@ async def resolve_waiting(
         return response
 
     return {"status": "resolved", "waiting_id": waiting_id}
+
+
+@api_router.post("/waiting/{waiting_id}/extend")
+async def extend_waiting(
+    waiting_id: int,
+    request: Request,
+    store: DatabaseStore = Depends(get_store),
+    config: AppConfig = Depends(get_config),  # noqa: B008
+):
+    """Extend a waiting-for item's deadline by the configured nudge hours."""
+    additional_hours = config.aging.waiting_for_nudge_hours
+    await store.extend_waiting_for_deadline(waiting_id, additional_hours)
+
+    if request.headers.get("HX-Request"):
+        response = Response(content="", media_type="text/html")
+        toast_msg = f"Extended by {additional_hours}h"
+        response.headers["HX-Trigger"] = f'{{"showToast": "{toast_msg}"}}'
+        return response
+
+    return {"status": "extended", "waiting_id": waiting_id, "additional_hours": additional_hours}
+
+
+@api_router.post("/waiting/{waiting_id}/escalate")
+async def escalate_waiting(
+    waiting_id: int,
+    request: Request,
+    store: DatabaseStore = Depends(get_store),
+):
+    """Mark a waiting-for item as expired (manual escalation)."""
+    await store.resolve_waiting_for(waiting_id, status="expired")
+
+    if request.headers.get("HX-Request"):
+        response = Response(content="", media_type="text/html")
+        response.headers["HX-Trigger"] = '{"showToast": "Escalated"}'
+        return response
+
+    return {"status": "escalated", "waiting_id": waiting_id}
 
 
 @api_router.get("/config")
@@ -911,3 +1088,101 @@ async def health_check(
         "degraded_mode": degraded,
         "version": "0.1.0",
     }
+
+
+@api_router.post("/auto-rules/create-from-sender")
+async def create_auto_rule_from_sender(
+    request: Request,
+    body: CreateAutoRuleRequest,
+    config: AppConfig = Depends(get_config),  # noqa: B008
+):
+    """Create an auto-rule from sender affinity data.
+
+    Validates the rule, checks for duplicates, appends to config.yaml
+    with backup, and returns the created rule details.
+    """
+    from assistant.classifier.auto_rules import check_duplicate_rule, create_rule_from_sender
+    from assistant.config import append_auto_rule
+
+    # Check for duplicate
+    existing = check_duplicate_rule(body.sender_email, config.auto_rules)
+    if existing:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Auto-rule '{existing.name}' already covers this sender.",
+        )
+
+    # Build rule dict
+    rule_dict = create_rule_from_sender(
+        sender_email=body.sender_email,
+        folder=body.folder,
+        priority=body.priority,
+        action_type=body.action_type,
+        rule_name=body.rule_name,
+    )
+
+    # Append to config (backup + validate + write)
+    try:
+        append_auto_rule(rule_dict)
+    except (ConfigValidationError, ConfigLoadError) as e:
+        raise HTTPException(status_code=422, detail=str(e)) from None
+
+    logger.info(
+        "auto_rule_created_from_sender",
+        rule_name=rule_dict["name"],
+        sender=body.sender_email,
+    )
+
+    if request.headers.get("HX-Request"):
+        response = Response(content="", media_type="text/html")
+        toast_msg = f"Auto-rule '{rule_dict['name']}' created"
+        response.headers["HX-Trigger"] = f'{{"showToast": "{toast_msg}"}}'
+        return response
+
+    return {"status": "created", "rule": rule_dict}
+
+
+@api_router.post("/senders/{email:path}/category")
+async def update_sender_category(
+    email: str,
+    body: UpdateSenderCategoryRequest,
+    store: DatabaseStore = Depends(get_store),
+):
+    """Update a sender's category."""
+    from assistant.db.store import SenderCategory
+
+    valid_categories = SenderCategory.__args__
+    if body.category not in valid_categories:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid category '{body.category}'. Valid: {', '.join(valid_categories)}",
+        )
+
+    try:
+        await store.update_sender_category(email, body.category)
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from None
+
+    logger.info("sender_category_updated", email=email, category=body.category)
+
+    return {"status": "updated", "email": email, "category": body.category}
+
+
+@api_router.post("/senders/{email:path}/default-folder")
+async def update_sender_default_folder(
+    email: str,
+    body: UpdateSenderFolderRequest,
+    store: DatabaseStore = Depends(get_store),
+):
+    """Update a sender's default folder."""
+    if not body.folder.strip():
+        raise HTTPException(status_code=422, detail="Folder cannot be empty")
+
+    try:
+        await store.update_sender_default_folder(email, body.folder)
+    except DatabaseError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from None
+
+    logger.info("sender_default_folder_updated", email=email, folder=body.folder)
+
+    return {"status": "updated", "email": email, "folder": body.folder}

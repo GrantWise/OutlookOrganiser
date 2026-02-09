@@ -396,9 +396,8 @@ async def test_degraded_mode_skips_claude(
     mock_message_manager: MagicMock,
 ):
     """Test that degraded mode skips Claude classification."""
-    # Force into degraded mode
-    engine._degraded_mode = True
-    engine._consecutive_failures = MAX_CONSECUTIVE_FAILURES
+    # Force into degraded mode via DegradationState
+    engine._degradation.claude_consecutive_failures = MAX_CONSECUTIVE_FAILURES
 
     mock_message_manager.list_messages.return_value = [_make_raw_message(msg_id="msg-degraded")]
 
@@ -414,12 +413,11 @@ async def test_recovery_from_degraded_mode(
     mock_message_manager: MagicMock,
 ):
     """Test exiting degraded mode when Claude recovers."""
-    # Force into degraded mode
-    engine._degraded_mode = True
-    engine._consecutive_failures = MAX_CONSECUTIVE_FAILURES
+    # Force into degraded mode via DegradationState
+    engine._degradation.claude_consecutive_failures = MAX_CONSECUTIVE_FAILURES
 
-    # Now exit degraded mode by turning it off and having a successful call
-    engine._degraded_mode = False
+    # Reset failures so next successful call brings us out of degraded mode
+    engine._degradation.claude_consecutive_failures = 0
     mock_classifier.classify_with_claude = AsyncMock(return_value=_make_classification_result())
     mock_message_manager.list_messages.return_value = [_make_raw_message(msg_id="msg-recover")]
 

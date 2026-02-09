@@ -234,104 +234,192 @@ CHAT_TOOLS: list[dict[str, Any]] = [
     },
 ]
 
+# Manage category tool (Phase 2 - user-tier category management)
+MANAGE_CATEGORY_TOOL: dict[str, Any] = {
+    "name": "manage_category",
+    "description": (
+        "Create or delete a custom category in the Outlook master category list. "
+        "Only manages user-tier categories — cannot modify framework (P1-P4, action types) "
+        "or taxonomy (project/area) categories."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": ["create", "delete"],
+                "description": "Action to perform on the category",
+            },
+            "category_name": {
+                "type": "string",
+                "description": "Name of the category to create or delete",
+            },
+            "color_preset": {
+                "type": "string",
+                "description": "Optional color preset (preset0-preset24) for new categories",
+            },
+        },
+        "required": ["action", "category_name"],
+    },
+}
+
+# Framework categories that cannot be deleted via manage_category
+_FRAMEWORK_CATEGORIES = {
+    "P1 - Urgent Important",
+    "P2 - Important",
+    "P3 - Urgent Low",
+    "P4 - Low",
+    "Needs Reply",
+    "Review",
+    "Delegated",
+    "FYI Only",
+    "Waiting For",
+    "Scheduled",
+}
+
 
 # ---------------------------------------------------------------------------
 # Tool execution functions
 # ---------------------------------------------------------------------------
 
 
+async def _resolve_scope_emails(
+    scope: str,
+    ctx: ToolExecutionContext,
+) -> list[Any]:
+    """Determine which emails to reclassify based on scope.
+
+    Args:
+        scope: 'thread' or 'single'
+        ctx: Tool execution context with current email
+
+    Returns:
+        List of Email objects to reclassify
+    """
+    if scope == "thread" and ctx.email.conversation_id:
+        thread_emails = await ctx.store.get_thread_emails(ctx.email.conversation_id, limit=50)
+        email_ids = {em.id for em in thread_emails}
+        if ctx.email.id not in email_ids:
+            thread_emails.append(ctx.email)
+        return thread_emails
+    return [ctx.email]
+
+
+async def _upsert_suggestion(
+    email_id: str,
+    folder: str,
+    priority: str,
+    action_type: str,
+    reasoning: str,
+    ctx: ToolExecutionContext,
+) -> None:
+    """Find or create a suggestion for an email and approve it.
+
+    Uses the returned ID directly on creation to avoid TOCTOU races.
+    """
+    suggestion = await ctx.store.get_suggestion_by_email_id(email_id)
+
+    if suggestion:
+        await ctx.store.approve_suggestion(
+            suggestion.id,
+            approved_folder=folder,
+            approved_priority=priority,
+            approved_action_type=action_type,
+        )
+    else:
+        new_id = await ctx.store.create_suggestion(
+            email_id=email_id,
+            suggested_folder=folder,
+            suggested_priority=priority,
+            suggested_action_type=action_type,
+            confidence=1.0,
+            reasoning=f"Chat reclassification: {reasoning}",
+        )
+        await ctx.store.approve_suggestion(
+            new_id,
+            approved_folder=folder,
+            approved_priority=priority,
+            approved_action_type=action_type,
+        )
+
+
+def _execute_graph_move_for_email(
+    em: Any,
+    folder: str,
+    priority: str,
+    action_type: str,
+    ctx: ToolExecutionContext,
+) -> tuple[bool, str | None, dict[str, Any] | None]:
+    """Execute the Graph API move for a single email.
+
+    Returns:
+        Tuple of (success, error_message, task_info)
+    """
+    if not ctx.folder_manager or not ctx.message_manager:
+        return True, None, None
+
+    email_data = {
+        "subject": em.subject,
+        "sender_name": em.sender_name,
+        "snippet": em.snippet,
+        "web_link": em.web_link,
+        "received_at": em.received_at,
+    }
+    result = execute_email_move(
+        email_id=em.id,
+        folder=folder,
+        priority=priority,
+        action_type=action_type,
+        folder_manager=ctx.folder_manager,
+        message_manager=ctx.message_manager,
+        config=ctx.config,
+        task_manager=ctx.task_manager,
+        email_data=email_data,
+    )
+    error = result["graph_error"]
+    task_info = result.get("task_info")
+    return error is None, error, task_info
+
+
 async def execute_reclassify(args: dict[str, Any], ctx: ToolExecutionContext) -> str:
-    """Reclassify the current email (and optionally thread) with immediate move."""
+    """Reclassify the current email (and optionally thread) with immediate move.
+
+    H8: Orchestrator delegates to extracted helpers for testability.
+    """
     folder = args["folder"]
     priority = args["priority"]
     action_type = args["action_type"]
     scope = args.get("scope", "thread")
+    reasoning = args.get("reasoning", "")
 
-    # Determine target emails
-    if scope == "thread" and ctx.email.conversation_id:
-        thread_emails = await ctx.store.get_thread_emails(ctx.email.conversation_id, limit=50)
-        # Include the current email if not in the thread result
-        email_ids = {em.id for em in thread_emails}
-        if ctx.email.id not in email_ids:
-            thread_emails.append(ctx.email)
-    else:
-        thread_emails = [ctx.email]
+    thread_emails = await _resolve_scope_emails(scope, ctx)
 
     moved_count = 0
-    errors = []
+    errors: list[str] = []
 
     for em in thread_emails:
-        # Find or create suggestion for this email
-        suggestion = await ctx.store.get_suggestion_by_email_id(em.id)
+        await _upsert_suggestion(em.id, folder, priority, action_type, reasoning, ctx)
 
-        if suggestion:
-            # Update existing suggestion
-            await ctx.store.approve_suggestion(
-                suggestion.id,
-                approved_folder=folder,
-                approved_priority=priority,
-                approved_action_type=action_type,
-            )
-        else:
-            # Create new suggestion and approve it using the returned ID directly.
-            # This avoids a TOCTOU race where a concurrent request could create
-            # a duplicate suggestion between create and re-fetch.
-            new_id = await ctx.store.create_suggestion(
-                email_id=em.id,
-                suggested_folder=folder,
-                suggested_priority=priority,
-                suggested_action_type=action_type,
-                confidence=1.0,
-                reasoning=f"Chat reclassification: {args.get('reasoning', '')}",
-            )
-            await ctx.store.approve_suggestion(
-                new_id,
-                approved_folder=folder,
-                approved_priority=priority,
-                approved_action_type=action_type,
-            )
+        success, error, task_info = _execute_graph_move_for_email(
+            em, folder, priority, action_type, ctx
+        )
+        if success:
+            moved_count += 1
+        elif error:
+            errors.append(f"{em.subject}: {error}")
 
-        # Execute Graph API move
-        if ctx.folder_manager and ctx.message_manager:
-            email_data = {
-                "subject": em.subject,
-                "sender_name": em.sender_name,
-                "snippet": em.snippet,
-                "web_link": em.web_link,
-                "received_at": em.received_at,
-            }
-            result = execute_email_move(
-                email_id=em.id,
-                folder=folder,
-                priority=priority,
-                action_type=action_type,
-                folder_manager=ctx.folder_manager,
-                message_manager=ctx.message_manager,
-                config=ctx.config,
-                task_manager=ctx.task_manager,
-                email_data=email_data,
-            )
-            if result["graph_error"]:
-                errors.append(f"{em.subject}: {result['graph_error']}")
-            else:
-                moved_count += 1
-
-            # Record task_sync if task was created
-            task_info = result.get("task_info")
-            if task_info:
+        if task_info:
+            try:
                 await ctx.store.create_task_sync(
                     email_id=em.id,
                     todo_task_id=task_info["todo_task_id"],
                     todo_list_id=task_info["todo_list_id"],
                     task_type=task_info["task_type"],
                 )
-        else:
-            moved_count += 1  # Count as success if no Graph managers
+            except Exception as e:
+                logger.warning("task_sync_failed", email_id=em.id[:20], error=str(e))
 
-        # Update inherited_folder for thread consistency
         await ctx.store.update_email_inherited_folder(em.id, folder)
-
-        # Log action
         await ctx.store.log_action(
             action_type="move",
             email_id=em.id,
@@ -339,7 +427,7 @@ async def execute_reclassify(args: dict[str, Any], ctx: ToolExecutionContext) ->
                 "folder": folder,
                 "priority": priority,
                 "action_type": action_type,
-                "reasoning": args.get("reasoning", ""),
+                "reasoning": reasoning,
                 "scope": scope,
             },
             triggered_by="chat_assistant",
@@ -635,11 +723,58 @@ async def execute_create_project_or_area(args: dict[str, Any], ctx: ToolExecutio
 # Tool dispatcher
 # ---------------------------------------------------------------------------
 
+
+async def execute_manage_category(args: dict[str, Any], ctx: ToolExecutionContext) -> str:
+    """Create or delete a user-tier category in the Outlook master category list."""
+    action = args["action"]
+    category_name = args["category_name"]
+
+    if not ctx.category_manager:
+        return "Category management is not available (no category_manager configured)."
+
+    # Safety: reject framework categories
+    if category_name in _FRAMEWORK_CATEGORIES:
+        return (
+            f"Cannot {action} '{category_name}': this is a framework category "
+            "(priority or action type). Framework categories are managed automatically."
+        )
+
+    # Safety: reject taxonomy categories (projects/areas)
+    if category_name.startswith(("Projects/", "Areas/")):
+        return (
+            f"Cannot {action} '{category_name}': this is a taxonomy category. "
+            "Use the create_project_or_area or update_project_signals tools instead."
+        )
+
+    try:
+        if action == "create":
+            color = args.get("color_preset", "preset0")
+            ctx.category_manager.create_category(category_name, color)
+            return f"Created category '{category_name}' with color {color}."
+
+        elif action == "delete":
+            ctx.category_manager.delete_category(category_name)
+            return f"Deleted category '{category_name}'."
+
+        else:
+            return f"Unknown action '{action}'. Use 'create' or 'delete'."
+
+    except Exception as e:
+        logger.error(
+            "manage_category_failed",
+            action=action,
+            category=category_name,
+            error=str(e),
+        )
+        return f"Failed to {action} category '{category_name}': {e}"
+
+
 _TOOL_HANDLERS: dict[str, Any] = {
     "reclassify_email": execute_reclassify,
     "add_auto_rule": execute_add_auto_rule,
     "update_project_signals": execute_update_signals,
     "create_project_or_area": execute_create_project_or_area,
+    "manage_category": execute_manage_category,
 }
 
 

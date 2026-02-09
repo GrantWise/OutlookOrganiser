@@ -404,3 +404,49 @@ def write_config_safely(config: AppConfig, config_path: Path | None = None) -> N
     finally:
         fcntl.flock(lock_fd, fcntl.LOCK_UN)
         lock_fd.close()
+
+
+def append_auto_rule(
+    rule_dict: dict[str, Any],
+    config_path: Path | None = None,
+) -> None:
+    """Append an auto-rule to the config file.
+
+    Reads the current config, adds the rule, validates, backs up, and writes.
+    Uses write_config_safely for atomic write with backup.
+
+    Args:
+        rule_dict: Auto-rule config dict (name, match, action)
+        config_path: Optional config file path override
+
+    Raises:
+        ConfigValidationError: If the resulting config is invalid
+        ConfigLoadError: If reading or writing fails
+    """
+    target_path = config_path or _get_config_path()
+
+    # Load current config
+    current = load_config(target_path)
+
+    # Check for duplicate rule name
+    existing_names = {r.name for r in current.auto_rules}
+    if rule_dict.get("name") in existing_names:
+        raise ConfigValidationError(
+            f"Auto-rule '{rule_dict.get('name')}' already exists in config."
+        )
+
+    # Build updated config dict, append rule
+    config_dict = current.model_dump(mode="python")
+    config_dict["auto_rules"].append(rule_dict)
+
+    # Validate the updated config
+    updated = _validate_config(config_dict, target_path)
+
+    # Write safely (backup + atomic replace + reset singleton)
+    write_config_safely(updated, target_path)
+
+    logger.info(
+        "auto_rule_appended",
+        rule_name=rule_dict.get("name"),
+        total_rules=len(updated.auto_rules),
+    )

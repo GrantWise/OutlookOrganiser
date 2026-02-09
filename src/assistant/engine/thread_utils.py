@@ -240,6 +240,8 @@ class ThreadContextManager:
         conversation_id: str,
         current_subject: str,
         current_sender_domain: str,
+        current_sender_email: str = "",
+        match_mode: str = "domain",
     ) -> InheritanceResult:
         """Check if folder can be inherited from prior thread classification.
 
@@ -247,7 +249,7 @@ class ThreadContextManager:
         1. Query for prior approved classification in same conversation
         2. If found, check for significant changes:
            - Subject changed (not just Re:/Fwd:)? -> No inherit
-           - New sender domain in thread? -> No inherit
+           - New participant (domain or exact match)? -> No inherit
            - Otherwise -> Inherit with confidence 0.95
 
         Note: Even when inheriting folder, priority and action_type should
@@ -257,6 +259,8 @@ class ThreadContextManager:
             conversation_id: Graph API conversation ID
             current_subject: Current email subject
             current_sender_domain: Domain of current email sender
+            current_sender_email: Full sender email (used with match_mode="exact")
+            match_mode: "domain" to match sender domain, "exact" to match full email (R7)
 
         Returns:
             InheritanceResult indicating whether to inherit and why
@@ -285,14 +289,21 @@ class ThreadContextManager:
                     f"Subject changed: '{normalized_current}' not in prior subjects"
                 )
 
-        # Check for new sender domain
-        prior_domains = {extract_domain(e.sender_email) for e in prior_emails if e.sender_email}
-        current_domain_lower = current_sender_domain.lower()
-
-        if prior_domains and current_domain_lower not in prior_domains:
-            return InheritanceResult.no_inherit(
-                f"New participant domain: {current_domain_lower} not in {prior_domains}"
-            )
+        # Check for new sender (R7: configurable domain vs exact matching)
+        if match_mode == "exact":
+            prior_senders = {e.sender_email.lower() for e in prior_emails if e.sender_email}
+            current_sender_lower = current_sender_email.lower()
+            if prior_senders and current_sender_lower not in prior_senders:
+                return InheritanceResult.no_inherit(
+                    f"New participant: {current_sender_lower} not in prior senders"
+                )
+        else:
+            prior_domains = {extract_domain(e.sender_email) for e in prior_emails if e.sender_email}
+            current_domain_lower = current_sender_domain.lower()
+            if prior_domains and current_domain_lower not in prior_domains:
+                return InheritanceResult.no_inherit(
+                    f"New participant domain: {current_domain_lower} not in {prior_domains}"
+                )
 
         # All checks passed - inherit the folder
         logger.debug(

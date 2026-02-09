@@ -56,7 +56,7 @@ class TriageConfig(BaseModel):
     """Triage engine configuration."""
 
     interval_minutes: int = Field(
-        default=15,
+        default=5,
         ge=1,
         le=1440,
         description="How often to check for new mail (minutes)",
@@ -80,6 +80,10 @@ class TriageConfig(BaseModel):
     watch_folders: list[str] = Field(
         default=["Inbox"],
         description="Folders to monitor for new emails",
+    )
+    thread_inheritance_match: Literal["domain", "exact"] = Field(
+        default="domain",
+        description="Thread inheritance matching: 'domain' matches sender domain, 'exact' matches full email",
     )
 
 
@@ -361,6 +365,30 @@ class AutoRulesHygieneConfig(BaseModel):
     )
 
 
+class LearningConfig(BaseModel):
+    """Preference learning from user corrections."""
+
+    enabled: bool = Field(default=True, description="Enable learning from corrections")
+    min_corrections_to_update: int = Field(
+        default=3,
+        ge=1,
+        le=50,
+        description="Minimum corrections before triggering preference update",
+    )
+    lookback_days: int = Field(
+        default=7,
+        ge=1,
+        le=90,
+        description="How far back to look for corrections",
+    )
+    max_preferences_words: int = Field(
+        default=500,
+        ge=50,
+        le=2000,
+        description="Maximum word count for preferences text",
+    )
+
+
 class SuggestionQueueConfig(BaseModel):
     """Suggestion queue management configuration."""
 
@@ -475,6 +503,7 @@ class AppConfig(BaseModel):
     digest: DigestConfig = Field(default_factory=DigestConfig)
     auto_rules_hygiene: AutoRulesHygieneConfig = Field(default_factory=AutoRulesHygieneConfig)
     suggestion_queue: SuggestionQueueConfig = Field(default_factory=SuggestionQueueConfig)
+    learning: LearningConfig = Field(default_factory=LearningConfig)
     llm_logging: LLMLoggingConfig = Field(default_factory=LLMLoggingConfig)
     integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
 

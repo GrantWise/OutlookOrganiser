@@ -29,6 +29,7 @@ from assistant.auth.msal_auth import GraphAuth
 from assistant.core.errors import (
     AuthenticationError,
     ConflictError,
+    DeltaTokenExpiredError,
     GraphAPIError,
     RateLimitExceeded,
 )
@@ -638,3 +639,255 @@ class GraphClient:
         )
 
         return all_items
+
+    # ------------------------------------------------------------------
+    # Delta query support (Phase 2 — Feature 2A)
+    # ------------------------------------------------------------------
+
+    # Safety limit to prevent runaway pagination on corrupted delta streams
+    DELTA_MAX_PAGES = 100
+
+    def get_delta_messages(
+        self,
+        folder_id: str,
+        delta_token: str | None,
+        select_fields: str | None = None,
+        max_items: int = 200,
+        max_pages: int | None = None,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """Fetch messages using a delta query.
+
+        Delta queries return only messages that have changed since the last sync.
+        On the first call (no delta_token), performs a full initial sync and
+        returns a delta token for subsequent incremental calls.
+
+        Args:
+            folder_id: Graph API folder ID (or well-known name like 'Inbox')
+            delta_token: Token from previous delta response, or None for initial sync
+            select_fields: Comma-separated list of fields to select
+            max_items: Maximum total items to collect across all pages
+            max_pages: Maximum pages to fetch (overrides DELTA_MAX_PAGES if smaller)
+
+        Returns:
+            Tuple of (messages, new_delta_token). If the delta stream has no more
+            changes, messages will be empty and a new token is still returned.
+
+        Raises:
+            DeltaTokenExpiredError: If the token has expired (410 Gone)
+            GraphAPIError: For other API errors
+        """
+        all_messages: list[dict[str, Any]] = []
+
+        if delta_token:
+            # Incremental sync — use the stored deltaLink directly
+            next_url = delta_token
+            params: dict[str, Any] | None = None
+        else:
+            # Initial sync — build the delta query endpoint
+            next_url = None
+            endpoint = f"/me/mailFolders/{folder_id}/messages/delta"
+            params = {}
+            if select_fields:
+                params["$select"] = select_fields
+
+        new_delta_token: str | None = None
+        page_count = 0
+        page_limit = min(max_pages, self.DELTA_MAX_PAGES) if max_pages else self.DELTA_MAX_PAGES
+
+        while True:
+            if page_count >= page_limit:
+                logger.warning(
+                    "delta_query_page_limit_reached",
+                    pages=page_count,
+                    items=len(all_messages),
+                    folder_id=folder_id,
+                )
+                break
+
+            try:
+                if next_url:
+                    response = self.get(next_url)
+                else:
+                    response = self.get(endpoint, params=params)
+            except GraphAPIError as e:
+                if e.status_code == 410:
+                    raise DeltaTokenExpiredError(
+                        f"Delta token expired for folder '{folder_id}'. "
+                        "Performing full sync this cycle.",
+                        folder=folder_id,
+                    ) from e
+                raise
+
+            items = response.get("value", [])
+            all_messages.extend(items)
+            page_count += 1
+
+            # Check for @odata.nextLink (more pages) vs @odata.deltaLink (done)
+            next_link = response.get("@odata.nextLink")
+            delta_link = response.get("@odata.deltaLink")
+
+            if next_link:
+                next_url = next_link
+            elif delta_link:
+                new_delta_token = delta_link
+                break
+            else:
+                # No next or delta link — end of stream
+                break
+
+            if len(all_messages) >= max_items:
+                logger.debug(
+                    "delta_query_max_items_reached",
+                    max_items=max_items,
+                    items=len(all_messages),
+                )
+                break
+
+        logger.info(
+            "delta_query_complete",
+            folder_id=folder_id,
+            pages=page_count,
+            messages=len(all_messages),
+            has_token=new_delta_token is not None,
+            was_incremental=delta_token is not None,
+        )
+
+        return all_messages, new_delta_token
+
+    # ------------------------------------------------------------------
+    # Batch request support (Phase 2 — C3 remediation)
+    # ------------------------------------------------------------------
+
+    BATCH_MAX_SIZE = 20  # Graph API limit per $batch POST
+
+    def batch_request(
+        self,
+        operations: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Execute multiple Graph API operations in a single $batch request.
+
+        Each operation dict must contain:
+            - id: Unique string to correlate request with response
+            - method: HTTP method (GET, POST, PATCH, DELETE)
+            - url: Relative URL (e.g., "/me/messages/{id}/move")
+
+        Optional per operation:
+            - body: JSON body for POST/PATCH
+            - headers: Additional headers (Content-Type added automatically for body)
+
+        If more than 20 operations are provided, they are chunked into
+        multiple batch calls automatically.
+
+        Args:
+            operations: List of operation dicts
+
+        Returns:
+            List of response dicts, each with 'id', 'status', 'body' keys,
+            ordered by operation id.
+
+        Raises:
+            GraphAPIError: If the batch POST itself fails (not individual ops)
+        """
+        if not operations:
+            return []
+
+        all_responses: list[dict[str, Any]] = []
+
+        # Chunk into groups of BATCH_MAX_SIZE
+        for chunk_start in range(0, len(operations), self.BATCH_MAX_SIZE):
+            chunk = operations[chunk_start : chunk_start + self.BATCH_MAX_SIZE]
+
+            # Ensure Content-Type header on operations with a body
+            requests_payload = []
+            for op in chunk:
+                req: dict[str, Any] = {
+                    "id": op["id"],
+                    "method": op["method"],
+                    "url": op["url"],
+                }
+                if "body" in op and op["body"] is not None:
+                    req["body"] = op["body"]
+                    req["headers"] = op.get("headers", {})
+                    req["headers"].setdefault("Content-Type", "application/json")
+                elif "headers" in op:
+                    req["headers"] = op["headers"]
+                requests_payload.append(req)
+
+            # Single rate-limit token per batch call
+            self._consume_rate_limit_token()
+
+            logger.info(
+                "batch_request_sending",
+                operation_count=len(chunk),
+                chunk_start=chunk_start,
+            )
+
+            response = self.post("/$batch", json={"requests": requests_payload})
+
+            responses = response.get("responses", [])
+            all_responses.extend(responses)
+
+            logger.info(
+                "batch_request_complete",
+                sent=len(chunk),
+                received=len(responses),
+            )
+
+        # Sort by id to match input order
+        all_responses.sort(key=lambda r: r.get("id", ""))
+
+        return all_responses
+
+    def batch_move_messages(
+        self,
+        moves: list[tuple[str, str]],
+    ) -> list[dict[str, Any]]:
+        """Move multiple messages to destination folders in a single batch.
+
+        Args:
+            moves: List of (message_id, destination_folder_id) tuples
+
+        Returns:
+            List of result dicts, each with:
+                - id: The message_id
+                - success: bool
+                - status: HTTP status code
+                - body: Response body (moved message or error)
+        """
+        if not moves:
+            return []
+
+        operations = [
+            {
+                "id": msg_id,
+                "method": "POST",
+                "url": f"/me/messages/{msg_id}/move",
+                "body": {"destinationId": folder_id},
+            }
+            for msg_id, folder_id in moves
+        ]
+
+        raw_responses = self.batch_request(operations)
+
+        results = []
+        for resp in raw_responses:
+            status = resp.get("status", 0)
+            results.append(
+                {
+                    "id": resp.get("id", ""),
+                    "success": 200 <= status < 300,
+                    "status": status,
+                    "body": resp.get("body", {}),
+                }
+            )
+
+        succeeded = sum(1 for r in results if r["success"])
+        failed = len(results) - succeeded
+        logger.info(
+            "batch_move_complete",
+            total=len(moves),
+            succeeded=succeeded,
+            failed=failed,
+        )
+
+        return results

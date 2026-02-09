@@ -87,6 +87,7 @@ class ClassificationResult:
     waiting_for_detail: dict[str, str] | None = None
     suggested_new_project: str | None = None
     inherited_folder: bool = False
+    auto_rule_name: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dict for JSON storage in classification_json."""
@@ -192,6 +193,7 @@ class EmailClassifier:
             confidence=1.0,
             reasoning=match.match_reason,
             method="auto_rule",
+            auto_rule_name=match.rule.name,
         )
 
     async def classify_with_claude(
@@ -318,7 +320,13 @@ class EmailClassifier:
             api_response = self._client.messages.create(
                 model=model_name,
                 max_tokens=1024,
-                system=self._system_prompt,
+                system=[
+                    {
+                        "type": "text",
+                        "text": self._system_prompt,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
                 messages=messages,
                 tools=[CLASSIFY_EMAIL_TOOL],
                 tool_choice={"type": "tool", "name": "classify_email"},
